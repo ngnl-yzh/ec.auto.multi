@@ -1,0 +1,8 @@
+streamlit>=1.32.0
+requests>=2.31.0
+beautifulsoup4>=4.12.3
+openai>=1.50.0
+notion-client>=2.2.1
+schedule>=1.2.1
+python-dotenv>=1.0.1
+httpx>=0.25.0
