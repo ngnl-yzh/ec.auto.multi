@@ -235,12 +235,13 @@ def record_manual_crawl(user_id: int):
         cur.execute("INSERT INTO manual_crawl_log (user_id) VALUES (%s)", (user_id,))
 
 def get_weekly_crawl_count(user_id: int) -> int:
+    """이번 주 월요일 00:00 KST 이후 수집 횟수"""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("""
             SELECT COUNT(*) FROM manual_crawl_log
             WHERE user_id = %s
-              AND created_at > NOW() - INTERVAL '7 days'
+              AND created_at >= DATE_TRUNC('week', NOW() AT TIME ZONE 'Asia/Seoul') AT TIME ZONE 'Asia/Seoul'
         """, (user_id,))
         return cur.fetchone()[0]
 
