@@ -5,7 +5,9 @@ from datetime import datetime, timedelta
 from db import (
     get_user_by_id, get_settings, save_settings,
     update_notion_credentials, get_session,
-    get_all_users, update_user_role
+    get_all_users, update_user_role,
+    record_manual_crawl, get_weekly_crawl_count,
+    get_admin_config, set_admin_config
 )
 from auth import register, login, logout
 from security import encrypt_token, decrypt_token, validate_notion_token, extract_notion_db_id
@@ -68,7 +70,7 @@ def _restore_session():
     if row:
         user = get_user_by_id(row["user_id"])
         if user:
-            st.session_state.update(logged_in=True, user_id=user["user_id"], email=user["email"])
+            st.session_state.update(logged_in=True, user_id=user["user_id"], email=user["email"], role=user.get("role","trial"))
 
 _restore_session()
 
@@ -111,6 +113,7 @@ def show_auth_page():
                             session_id=result,
                             user_id=user["user_id"],
                             email=user["email"],
+                            role=user.get("role", "trial"),
                             logged_in=True
                         )
                         st.rerun()
@@ -332,7 +335,10 @@ def show_main_app():
         with right:
             # 자동화 토글
             st.subheader("🤖 자동화 설정")
-            new_auto = st.toggle("자동화 활성화 (매일 오전 7시 · 오후 8시)", value=auto_enabled)
+            _role_auto = st.session_state.get("role", "trial")
+            if _role_auto == "trial":
+                st.warning("⚠️ 체험(trial) 계정은 자동화를 사용할 수 없습니다.")
+            new_auto = st.toggle("자동화 활성화 (매일 오전 7시 · 오후 8시)", value=auto_enabled, disabled=(_role_auto == "trial"))
             if new_auto != auto_enabled:
                 auto_enabled = new_auto
                 _save({"auto_enabled": auto_enabled})
@@ -354,9 +360,27 @@ def show_main_app():
             now = datetime.now(ZoneInfo('Asia/Seoul')).replace(tzinfo=None)
             st.caption(f"📅 {(now - timedelta(hours=sel_hours)).strftime('%m/%d %H:%M')} ~ {now.strftime('%m/%d %H:%M')} (KST)")
 
-            if st.button("📥 수동 수집 시작", use_container_width=True, type="primary"):
+            # 권한별 수동 수집 제한
+            _role = st.session_state.get("role", "trial")
+            if _role == "trial":
+                _limit = int(get_admin_config("trial_weekly_limit") or 15)
+            elif _role == "free":
+                _limit = int(get_admin_config("free_weekly_limit") or 30)
+            else:
+                _limit = 99999  # admin 무제한
+
+            _used = get_weekly_crawl_count(user_id)
+            _remaining = max(0, _limit - _used)
+
+            if _role != "admin":
+                st.caption(f"📊 이번 주 수동 수집: {_used} / {_limit}회 (남은 횟수: {_remaining}회)")
+
+            if st.button("📥 수동 수집 시작", use_container_width=True, type="primary",
+                         disabled=(_role in ["trial", "free"] and _remaining <= 0)):
                 if not notion_token or not notion_db_id:
                     st.error("❌ Notion 연결이 필요합니다.")
+                elif _role in ["trial", "free"] and _remaining <= 0:
+                    st.error(f"❌ 이번 주 수동 수집 횟수({_limit}회)를 모두 사용했습니다.")
                 else:
                     with st.spinner(f"최근 {sel_range} 기사 수집 중..."):
                         saved, skipped = run_crawler(
@@ -366,6 +390,7 @@ def show_main_app():
                                           summary_mode=summary_mode, enabled_sources=enabled_sources),
                             time_label="수동", hours=sel_hours,
                         )
+                    record_manual_crawl(user_id)
                     st.success(f"✅ 완료! {saved}개 저장, {skipped}개 중복 건너뜀")
 
             st.divider()
@@ -510,15 +535,36 @@ def show_admin_page():
     if not is_verified:
         st.markdown('<div class="main-title">🛡️ 관리자 인증</div>', unsafe_allow_html=True)
         st.caption("관리자 페이지 접근을 위해 관리자 비밀번호를 입력해주세요.")
+
+        # 어드민 비번 브루트포스 방어
+        fail_key = "admin_pw_fails"
+        lock_key = "admin_pw_locked_until"
+        from datetime import datetime as _dt
+        locked_until = st.session_state.get(lock_key)
+        if locked_until and _dt.now() < locked_until:
+            remaining = int((locked_until - _dt.now()).seconds / 60) + 1
+            st.error(f"🔒 관리자 비밀번호 5회 오류. {remaining}분 후 다시 시도해주세요.")
+            return
+
         with st.form("admin_verify_form"):
             admin_pw = st.text_input("관리자 비밀번호", type="password")
             verify_btn = st.form_submit_button("확인", use_container_width=True, type="primary")
         if verify_btn:
             if admin_pw == ADMIN_PASSWORD:
                 st.session_state["admin_verified_at"] = datetime.now()
+                st.session_state[fail_key] = 0
                 st.rerun()
             else:
-                st.error("❌ 관리자 비밀번호가 올바르지 않습니다.")
+                fails = st.session_state.get(fail_key, 0) + 1
+                st.session_state[fail_key] = fails
+                remaining_tries = max(0, 5 - fails)
+                if fails >= 5:
+                    from datetime import timedelta as _td
+                    st.session_state[lock_key] = _dt.now() + _td(minutes=30)
+                    st.session_state[fail_key] = 0
+                    st.error("🔒 5회 오류. 30분 동안 잠깁니다.")
+                else:
+                    st.error(f"❌ 비밀번호가 올바르지 않습니다. (남은 시도: {remaining_tries}회)")
         return
 
     # ── 관리자 패널 본문 ──────────────────────────────────
@@ -559,6 +605,9 @@ def show_admin_page():
                 st.write(f"**가입일:** {user['created_at'].strftime('%Y-%m-%d %H:%M') if user['created_at'] else '-'}")
                 st.write(f"**마지막 로그인:** {user['last_login'].strftime('%Y-%m-%d %H:%M') if user['last_login'] else '-'}")
                 st.write(f"**Notion 연결:** {'✅' if user['notion_connected'] else '❌'}")
+                # 이번 주 수집 횟수
+                weekly = get_weekly_crawl_count(user["user_id"])
+                st.write(f"**이번 주 수동 수집:** {weekly}회")
             with col2:
                 current_idx = role_options.index(user["role"]) if user["role"] in role_options else 0
                 new_role = st.selectbox(
@@ -572,6 +621,24 @@ def show_admin_page():
                     update_user_role(user["user_id"], new_role)
                     st.toast(f"✅ {user['email']} → {role_labels[new_role]}")
                     st.rerun()
+
+    # ── 제한 횟수 설정 ────────────────────────────────────
+    st.divider()
+    st.subheader("⚙️ 권한별 수동 수집 제한 설정")
+    cur_trial = int(get_admin_config("trial_weekly_limit") or 15)
+    cur_free  = int(get_admin_config("free_weekly_limit") or 30)
+
+    s1, s2 = st.columns(2)
+    with s1:
+        new_trial_limit = st.number_input("체험(trial) 주간 수집 한도", min_value=1, max_value=100, value=cur_trial)
+    with s2:
+        new_free_limit = st.number_input("무료(free) 주간 수집 한도", min_value=1, max_value=200, value=cur_free)
+
+    if st.button("💾 제한 설정 저장", type="primary"):
+        set_admin_config("trial_weekly_limit", str(new_trial_limit))
+        set_admin_config("free_weekly_limit", str(new_free_limit))
+        st.toast("✅ 제한 횟수 저장 완료!")
+        st.rerun()
 
 
 # ════════════════════════════════════════════════════════

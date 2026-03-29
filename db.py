@@ -64,10 +64,31 @@ def init_db():
                 updated_at      TIMESTAMP DEFAULT NOW()
             )
         """)
-        # 마이그레이션: 기존 테이블에 컬럼 추가 (없을 때만)
+        # 수동 수집 횟수 기록
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS manual_crawl_log (
+                id         SERIAL PRIMARY KEY,
+                user_id    INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        # 관리자 설정 (제한 횟수 등)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS admin_config (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+
+        # 마이그레이션
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'trial'")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_login_attempts_email ON login_attempts(email, attempted_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_crawl_log_user ON manual_crawl_log(user_id, created_at)")
+
+        # 기본 설정값 삽입 (없을 때만)
+        cur.execute("INSERT INTO admin_config (key, value) VALUES ('trial_weekly_limit', '15') ON CONFLICT (key) DO NOTHING")
+        cur.execute("INSERT INTO admin_config (key, value) VALUES ('free_weekly_limit', '30') ON CONFLICT (key) DO NOTHING")
 
 
 # ─── 유저 ────────────────────────────────────────────────
@@ -112,7 +133,6 @@ def update_notion_credentials(user_id: int, notion_token_enc: str, notion_db_id:
         )
 
 def update_user_role(user_id: int, role: str):
-    """role: trial / free / blocked / admin"""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("UPDATE users SET role = %s WHERE user_id = %s", (role, user_id))
@@ -199,6 +219,40 @@ def get_remaining_lockout_minutes(email: str, window_minutes: int = 15) -> int:
         unlock_at = row[0] + timedelta(minutes=window_minutes)
         remaining = (unlock_at - datetime.now()).seconds // 60
         return max(0, remaining)
+
+
+# ─── 수동 수집 횟수 ──────────────────────────────────────
+def record_manual_crawl(user_id: int):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO manual_crawl_log (user_id) VALUES (%s)", (user_id,))
+
+def get_weekly_crawl_count(user_id: int) -> int:
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COUNT(*) FROM manual_crawl_log
+            WHERE user_id = %s
+              AND created_at > NOW() - INTERVAL '7 days'
+        """, (user_id,))
+        return cur.fetchone()[0]
+
+
+# ─── 관리자 설정 ─────────────────────────────────────────
+def get_admin_config(key: str) -> str:
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM admin_config WHERE key = %s", (key,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+def set_admin_config(key: str, value: str):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO admin_config (key, value) VALUES (%s, %s)
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+        """, (key, value))
 
 
 # ─── 설정 ────────────────────────────────────────────────
