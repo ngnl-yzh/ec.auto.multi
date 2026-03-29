@@ -607,8 +607,13 @@ def show_admin_page():
         with st.expander(f"{user['email']}  —  {role_labels.get(user['role'], user['role'])}"):
             col1, col2 = st.columns([2, 1])
             with col1:
-                st.write(f"**가입일:** {user['created_at'].strftime('%Y-%m-%d %H:%M') if user['created_at'] else '-'}")
-                st.write(f"**마지막 로그인:** {user['last_login'].strftime('%Y-%m-%d %H:%M') if user['last_login'] else '-'}")
+                from datetime import timezone, timedelta as _td
+                KST = timezone(_td(hours=9))
+                def _kst(dt):
+                    if not dt: return '-'
+                    return dt.replace(tzinfo=timezone.utc).astimezone(KST).strftime('%Y-%m-%d %H:%M')
+                st.write(f"**가입일:** {_kst(user['created_at'])}")
+                st.write(f"**마지막 로그인:** {_kst(user['last_login'])}")
                 st.write(f"**Notion 연결:** {'✅' if user['notion_connected'] else '❌'}")
                 # 이번 주 수집 횟수
                 weekly = get_weekly_crawl_count(user["user_id"])
