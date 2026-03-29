@@ -82,6 +82,7 @@ def init_db():
 
         # 마이그레이션
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'trial'")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_weekly_limit INTEGER DEFAULT NULL")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_login_attempts_email ON login_attempts(email, attempted_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_crawl_log_user ON manual_crawl_log(user_id, created_at)")
@@ -142,13 +143,19 @@ def get_all_users():
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
             SELECT user_id, email, role, is_active, created_at, last_login,
-                   notion_db_id,
+                   notion_db_id, custom_weekly_limit,
                    CASE WHEN notion_token_enc IS NOT NULL THEN TRUE ELSE FALSE END AS notion_connected
             FROM users
             ORDER BY created_at DESC
         """)
         return cur.fetchall()
 
+
+def update_user_custom_limit(user_id: int, limit):
+    """limit=None 이면 기본값(권한별) 사용"""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET custom_weekly_limit = %s WHERE user_id = %s", (limit, user_id))
 
 # ─── 세션 ────────────────────────────────────────────────
 def create_session(session_id: str, user_id: int, ip_address: str = None, hours: int = 24):

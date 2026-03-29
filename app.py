@@ -7,7 +7,8 @@ from db import (
     update_notion_credentials, get_session,
     get_all_users, update_user_role,
     record_manual_crawl, get_weekly_crawl_count,
-    get_admin_config, set_admin_config
+    get_admin_config, set_admin_config,
+    update_user_custom_limit
 )
 from auth import register, login, logout
 from security import encrypt_token, decrypt_token, validate_notion_token, extract_notion_db_id
@@ -360,14 +361,18 @@ def show_main_app():
             now = datetime.now(ZoneInfo('Asia/Seoul')).replace(tzinfo=None)
             st.caption(f"📅 {(now - timedelta(hours=sel_hours)).strftime('%m/%d %H:%M')} ~ {now.strftime('%m/%d %H:%M')} (KST)")
 
-            # 권한별 수동 수집 제한
+            # 권한별 수동 수집 제한 (개별 설정 우선)
             _role = st.session_state.get("role", "trial")
-            if _role == "trial":
+            _user_row = get_user_by_id(user_id)
+            _custom_limit = _user_row.get("custom_weekly_limit") if _user_row else None
+            if _role == "admin":
+                _limit = 99999
+            elif _custom_limit is not None:
+                _limit = _custom_limit  # 개별 설정값 우선
+            elif _role == "trial":
                 _limit = int(get_admin_config("trial_weekly_limit") or 15)
-            elif _role == "free":
-                _limit = int(get_admin_config("free_weekly_limit") or 30)
             else:
-                _limit = 99999  # admin 무제한
+                _limit = int(get_admin_config("free_weekly_limit") or 30)
 
             _used = get_weekly_crawl_count(user_id)
             _remaining = max(0, _limit - _used)
@@ -621,6 +626,26 @@ def show_admin_page():
                     update_user_role(user["user_id"], new_role)
                     st.toast(f"✅ {user['email']} → {role_labels[new_role]}")
                     st.rerun()
+
+                # 개별 수집 횟수 제한
+                cur_custom = user.get("custom_weekly_limit")
+                custom_input = st.number_input(
+                    "개별 주간 한도 (비워두면 권한 기본값)",
+                    min_value=0, max_value=500,
+                    value=cur_custom if cur_custom is not None else 0,
+                    key=f"custom_{user['user_id']}"
+                )
+                c_col1, c_col2 = st.columns(2)
+                with c_col1:
+                    if st.button("한도 저장", key=f"climit_{user['user_id']}"):
+                        update_user_custom_limit(user["user_id"], custom_input if custom_input > 0 else None)
+                        st.toast(f"✅ 개별 한도 저장!")
+                        st.rerun()
+                with c_col2:
+                    if st.button("기본값으로", key=f"creset_{user['user_id']}"):
+                        update_user_custom_limit(user["user_id"], None)
+                        st.toast("✅ 기본값으로 초기화!")
+                        st.rerun()
 
     # ── 제한 횟수 설정 ────────────────────────────────────
     st.divider()
