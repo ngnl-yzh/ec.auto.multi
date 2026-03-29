@@ -495,16 +495,48 @@ def show_main_app():
 # 4. 어드민 패널
 # ════════════════════════════════════════════════════════
 def show_admin_page():
-    st.markdown('<div class="main-title">🛡️ 관리자 패널</div>', unsafe_allow_html=True)
-    st.divider()
+    ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
+    # ── 관리자 비밀번호 재확인 (환경변수) ─────────────────
+    verified_at = st.session_state.get("admin_verified_at")
+    is_verified = False
+    if verified_at:
+        elapsed = (datetime.now() - verified_at).seconds // 60
+        if elapsed < 30:
+            is_verified = True
+        else:
+            st.session_state.pop("admin_verified_at", None)
+
+    if not is_verified:
+        st.markdown('<div class="main-title">🛡️ 관리자 인증</div>', unsafe_allow_html=True)
+        st.caption("관리자 페이지 접근을 위해 관리자 비밀번호를 입력해주세요.")
+        with st.form("admin_verify_form"):
+            admin_pw = st.text_input("관리자 비밀번호", type="password")
+            verify_btn = st.form_submit_button("확인", use_container_width=True, type="primary")
+        if verify_btn:
+            if admin_pw == ADMIN_PASSWORD:
+                st.session_state["admin_verified_at"] = datetime.now()
+                st.rerun()
+            else:
+                st.error("❌ 관리자 비밀번호가 올바르지 않습니다.")
+        return
+
+    # ── 관리자 패널 본문 ──────────────────────────────────
+    col_title, col_lock = st.columns([5, 1])
+    with col_title:
+        st.markdown('<div class="main-title">🛡️ 관리자 패널</div>', unsafe_allow_html=True)
+    with col_lock:
+        if st.button("🔒 잠금", use_container_width=True):
+            st.session_state.pop("admin_verified_at", None)
+            st.rerun()
+
+    st.divider()
     users = get_all_users()
 
-    # 통계
-    total    = len(users)
-    free     = sum(1 for u in users if u["role"] == "free")
-    trial    = sum(1 for u in users if u["role"] == "trial")
-    blocked  = sum(1 for u in users if u["role"] == "blocked")
+    total     = len(users)
+    free      = sum(1 for u in users if u["role"] == "free")
+    trial     = sum(1 for u in users if u["role"] == "trial")
+    blocked   = sum(1 for u in users if u["role"] == "blocked")
     connected = sum(1 for u in users if u["notion_connected"])
 
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -517,7 +549,7 @@ def show_admin_page():
     st.divider()
     st.subheader("👥 유저 목록")
 
-    role_labels = {"trial": "🟡 체험", "free": "🟢 무료", "blocked": "🔴 차단", "admin": "🛡️ 관리자"}
+    role_labels  = {"trial": "🟡 체험", "free": "🟢 무료", "blocked": "🔴 차단", "admin": "🛡️ 관리자"}
     role_options = ["trial", "free", "blocked", "admin"]
 
     for user in users:
