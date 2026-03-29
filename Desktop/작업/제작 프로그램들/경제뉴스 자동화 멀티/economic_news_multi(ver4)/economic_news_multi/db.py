@@ -22,21 +22,19 @@ def init_db():
     with get_conn() as conn:
         cur = conn.cursor()
 
-        # 유저 테이블
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id           SERIAL PRIMARY KEY,
                 email             TEXT UNIQUE NOT NULL,
                 password_hash     TEXT NOT NULL,
-                notion_token_enc  TEXT,           -- AES 암호화된 Notion 토큰
+                notion_token_enc  TEXT,
                 notion_db_id      TEXT,
                 is_active         BOOLEAN DEFAULT TRUE,
+                role              TEXT DEFAULT 'trial',
                 created_at        TIMESTAMP DEFAULT NOW(),
                 last_login        TIMESTAMP DEFAULT NOW()
             )
         """)
-
-        # 세션 테이블 (DB 기반 세션)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
                 session_id   TEXT PRIMARY KEY,
@@ -46,8 +44,6 @@ def init_db():
                 ip_address   TEXT
             )
         """)
-
-        # 로그인 시도 기록 (brute-force 방지)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS login_attempts (
                 id           SERIAL PRIMARY KEY,
@@ -57,8 +53,6 @@ def init_db():
                 attempted_at TIMESTAMP DEFAULT NOW()
             )
         """)
-
-        # 유저 설정 테이블
         cur.execute("""
             CREATE TABLE IF NOT EXISTS user_settings (
                 user_id         INTEGER PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
@@ -70,8 +64,8 @@ def init_db():
                 updated_at      TIMESTAMP DEFAULT NOW()
             )
         """)
-
-        # 만료된 세션 자동 정리 인덱스
+        # 마이그레이션: 기존 테이블에 컬럼 추가 (없을 때만)
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'trial'")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_login_attempts_email ON login_attempts(email, attempted_at)")
 
@@ -92,13 +86,16 @@ def create_user(email: str, password_hash: str):
 def get_user_by_email(email: str):
     with get_conn() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute("SELECT * FROM users WHERE email = %s AND is_active = TRUE", (email.lower().strip(),))
+        cur.execute(
+            "SELECT * FROM users WHERE email = %s AND is_active = TRUE AND role != 'blocked'",
+            (email.lower().strip(),)
+        )
         return cur.fetchone()
 
 def get_user_by_id(user_id: int):
     with get_conn() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute("SELECT * FROM users WHERE user_id = %s AND is_active = TRUE", (user_id,))
+        cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
         return cur.fetchone()
 
 def update_last_login(user_id: int):
@@ -114,6 +111,24 @@ def update_notion_credentials(user_id: int, notion_token_enc: str, notion_db_id:
             (notion_token_enc, notion_db_id, user_id)
         )
 
+def update_user_role(user_id: int, role: str):
+    """role: trial / free / blocked / admin"""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET role = %s WHERE user_id = %s", (role, user_id))
+
+def get_all_users():
+    with get_conn() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""
+            SELECT user_id, email, role, is_active, created_at, last_login,
+                   notion_db_id,
+                   CASE WHEN notion_token_enc IS NOT NULL THEN TRUE ELSE FALSE END AS notion_connected
+            FROM users
+            ORDER BY created_at DESC
+        """)
+        return cur.fetchall()
+
 
 # ─── 세션 ────────────────────────────────────────────────
 def create_session(session_id: str, user_id: int, ip_address: str = None, hours: int = 24):
@@ -121,7 +136,6 @@ def create_session(session_id: str, user_id: int, ip_address: str = None, hours:
     expires_at = datetime.now() + timedelta(hours=hours)
     with get_conn() as conn:
         cur = conn.cursor()
-        # 기존 세션 정리 (같은 유저)
         cur.execute("DELETE FROM sessions WHERE user_id = %s", (user_id,))
         cur.execute(
             "INSERT INTO sessions (session_id, user_id, expires_at, ip_address) VALUES (%s, %s, %s, %s)",
@@ -129,7 +143,6 @@ def create_session(session_id: str, user_id: int, ip_address: str = None, hours:
         )
 
 def get_session(session_id: str):
-    from datetime import datetime
     with get_conn() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
@@ -159,7 +172,6 @@ def record_login_attempt(email: str, success: bool, ip_address: str = None):
         )
 
 def is_account_locked(email: str, max_attempts: int = 5, window_minutes: int = 15) -> bool:
-    """최근 window_minutes 내 실패 횟수가 max_attempts 이상이면 잠금"""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("""
@@ -172,7 +184,6 @@ def is_account_locked(email: str, max_attempts: int = 5, window_minutes: int = 1
         return count >= max_attempts
 
 def get_remaining_lockout_minutes(email: str, window_minutes: int = 15) -> int:
-    """잠금 해제까지 남은 시간(분) 반환"""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("""

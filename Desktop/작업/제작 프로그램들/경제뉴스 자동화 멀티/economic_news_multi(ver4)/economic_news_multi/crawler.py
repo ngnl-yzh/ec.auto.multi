@@ -289,22 +289,29 @@ def summarize_article(title, content, summary_mode="standard"):
 
 # ─── Notion 저장 ─────────────────────────────────────────
 def save_to_notion(title, url, summary, source_name, time_slot, notion_token, notion_db_id):
+    notion = NotionClient(auth=notion_token)
+    base_props = {
+        "이름":  {"title": [{"text": {"content": title}}]},
+        "URL":   {"url": url},
+        "날짜":  {"date": {"start": date.today().isoformat()}},
+        "요약":  {"rich_text": [{"text": {"content": summary[:2000]}}]},
+        "시간대": {"rich_text": [{"text": {"content": time_slot}}]},
+    }
     try:
-        notion = NotionClient(auth=notion_token)
         notion.pages.create(
             parent={"database_id": notion_db_id},
-            properties={
-                "이름":  {"title": [{"text": {"content": title}}]},
-                "URL":   {"url": url},
-                "날짜":  {"date": {"start": date.today().isoformat()}},
-                "상태":  {"status": {"name": "읽기 전"}},
-                "요약":  {"rich_text": [{"text": {"content": summary[:2000]}}]},
-                "시간대": {"rich_text": [{"text": {"content": time_slot}}]},
-            }
+            properties={**base_props, "상태": {"status": {"name": "읽기 전"}}}
         )
         print(f"✅ Notion 저장 완료: {title[:30]}...")
-    except Exception as e:
-        print(f"❌ Notion 저장 실패: {e}")
+    except Exception:
+        try:
+            notion.pages.create(
+                parent={"database_id": notion_db_id},
+                properties=base_props
+            )
+            print(f"✅ Notion 저장 완료 (상태 제외): {title[:30]}...")
+        except Exception as e:
+            print(f"❌ Notion 저장 실패: {e}")
 
 # ─── 메인 실행 ───────────────────────────────────────────
 def run_crawler(notion_token, notion_db_id, settings: dict, time_label="오전", hours=None):

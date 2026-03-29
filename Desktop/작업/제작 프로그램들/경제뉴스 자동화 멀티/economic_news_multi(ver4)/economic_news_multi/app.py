@@ -4,7 +4,8 @@ from datetime import datetime, timedelta
 
 from db import (
     get_user_by_id, get_settings, save_settings,
-    update_notion_credentials, get_session
+    update_notion_credentials, get_session,
+    get_all_users, update_user_role
 )
 from auth import register, login, logout
 from security import encrypt_token, decrypt_token, validate_notion_token, extract_notion_db_id
@@ -349,8 +350,9 @@ def show_main_app():
             hour_map = {"1시간":1,"3시간":3,"6시간":6,"12시간":12,"24시간":24,"36시간":36,"48시간":48}
             sel_range = st.select_slider("수집 범위", options=list(hour_map.keys()), value="6시간")
             sel_hours = hour_map[sel_range]
-            now = datetime.now()
-            st.caption(f"📅 {(now - timedelta(hours=sel_hours)).strftime('%m/%d %H:%M')} ~ {now.strftime('%m/%d %H:%M')}")
+            from zoneinfo import ZoneInfo
+            now = datetime.now(ZoneInfo('Asia/Seoul')).replace(tzinfo=None)
+            st.caption(f"📅 {(now - timedelta(hours=sel_hours)).strftime('%m/%d %H:%M')} ~ {now.strftime('%m/%d %H:%M')} (KST)")
 
             if st.button("📥 수동 수집 시작", use_container_width=True, type="primary"):
                 if not notion_token or not notion_db_id:
@@ -490,16 +492,86 @@ def show_main_app():
 
 
 # ════════════════════════════════════════════════════════
+# 4. 어드민 패널
+# ════════════════════════════════════════════════════════
+def show_admin_page():
+    st.markdown('<div class="main-title">🛡️ 관리자 패널</div>', unsafe_allow_html=True)
+    st.divider()
+
+    users = get_all_users()
+
+    # 통계
+    total    = len(users)
+    free     = sum(1 for u in users if u["role"] == "free")
+    trial    = sum(1 for u in users if u["role"] == "trial")
+    blocked  = sum(1 for u in users if u["role"] == "blocked")
+    connected = sum(1 for u in users if u["notion_connected"])
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("전체 유저", total)
+    c2.metric("무료 이용", free)
+    c3.metric("체험 중", trial)
+    c4.metric("차단", blocked)
+    c5.metric("Notion 연결", connected)
+
+    st.divider()
+    st.subheader("👥 유저 목록")
+
+    role_labels = {"trial": "🟡 체험", "free": "🟢 무료", "blocked": "🔴 차단", "admin": "🛡️ 관리자"}
+    role_options = ["trial", "free", "blocked", "admin"]
+
+    for user in users:
+        with st.expander(f"{user['email']}  —  {role_labels.get(user['role'], user['role'])}"):
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                st.write(f"**가입일:** {user['created_at'].strftime('%Y-%m-%d %H:%M') if user['created_at'] else '-'}")
+                st.write(f"**마지막 로그인:** {user['last_login'].strftime('%Y-%m-%d %H:%M') if user['last_login'] else '-'}")
+                st.write(f"**Notion 연결:** {'✅' if user['notion_connected'] else '❌'}")
+            with col2:
+                current_idx = role_options.index(user["role"]) if user["role"] in role_options else 0
+                new_role = st.selectbox(
+                    "권한 변경",
+                    options=role_options,
+                    index=current_idx,
+                    format_func=lambda x: role_labels.get(x, x),
+                    key=f"role_{user['user_id']}"
+                )
+                if st.button("저장", key=f"save_{user['user_id']}"):
+                    update_user_role(user["user_id"], new_role)
+                    st.toast(f"✅ {user['email']} → {role_labels[new_role]}")
+                    st.rerun()
+
+
+# ════════════════════════════════════════════════════════
 # 라우팅
 # ════════════════════════════════════════════════════════
 if not st.session_state.get("logged_in"):
     show_auth_page()
 else:
-    _uid     = st.session_state["user_id"]
-    _row     = get_user_by_id(_uid)
-    _has_notion = _row and _row.get("notion_token_enc") and _row.get("notion_db_id")
+    _uid  = st.session_state["user_id"]
+    _row  = get_user_by_id(_uid)
+    _role = _row.get("role", "trial") if _row else "trial"
 
-    if not _has_notion:
-        show_notion_setup_page(_uid)
+    # 차단된 유저 강제 로그아웃
+    if _role == "blocked":
+        st.error("❌ 이용이 제한된 계정입니다. 관리자에게 문의해주세요.")
+        _do_logout()
+        st.stop()
+
+    # 관리자면 어드민 페이지
+    if _role == "admin":
+        tab_main, tab_admin = st.tabs(["📰 메인", "🛡️ 관리자"])
+        with tab_main:
+            _has_notion = _row and _row.get("notion_token_enc") and _row.get("notion_db_id")
+            if not _has_notion:
+                show_notion_setup_page(_uid)
+            else:
+                show_main_app()
+        with tab_admin:
+            show_admin_page()
     else:
-        show_main_app()
+        _has_notion = _row and _row.get("notion_token_enc") and _row.get("notion_db_id")
+        if not _has_notion:
+            show_notion_setup_page(_uid)
+        else:
+            show_main_app()
