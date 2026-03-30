@@ -731,7 +731,7 @@ def _save_briefing_to_notion(notion_token: str, notion_db_id: str, group: str, b
             "이름":  {"title": [{"text": {"content": title}}]},
             "날짜":  {"date": {"start": date.today().isoformat()}},
             "시간대": {"rich_text": [{"text": {"content": group}}]},
-            "요약":  {"rich_text": [{"text": {"content": briefing[:2000]}}]},
+            "요약":  {"rich_text": [{"text": {"content": briefing[:1990]}}]},
             "유형":  {"select": {"name": "브리핑"}},
         }
         try:
