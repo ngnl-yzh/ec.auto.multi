@@ -385,18 +385,20 @@ def show_main_app():
 
                     # 새 스케줄 추가
                     if len(custom_schedules) < 5:
-                        nc1, nc2, nc3, nc4 = st.columns([2, 2, 2, 1])
-                        with nc1:
-                            new_hour = st.number_input("실행 시 (0~23)", min_value=0, max_value=23, value=12, key="new_sch_h")
-                        with nc2:
-                            new_min = st.number_input("실행 분 (0~59)", min_value=0, max_value=59, value=0, step=5, key="new_sch_m")
-                        with nc3:
-                            new_range = st.number_input("수집 범위 (시간)", min_value=1, max_value=24, value=5, key="new_sch_r",
-                                                        help="실행 시각 기준 몇 시간 전부터 수집할지 설정")
-                        with nc4:
-                            st.write("")
-                            st.write("")
-                            if st.button("➕", use_container_width=True):
+                        with st.form("add_schedule_form"):
+                            nc1, nc2, nc3, nc4 = st.columns([2, 2, 2, 1])
+                            with nc1:
+                                new_hour = st.number_input("실행 시 (0~23)", min_value=0, max_value=23, value=12, key="new_sch_h")
+                            with nc2:
+                                new_min = st.number_input("실행 분 (0~59)", min_value=0, max_value=59, value=0, key="new_sch_m")
+                            with nc3:
+                                new_range = st.number_input("수집 범위 (시간)", min_value=1, max_value=24, value=5, key="new_sch_r",
+                                                            help="실행 시각 기준 몇 시간 전부터 수집할지 설정")
+                            with nc4:
+                                st.write("")
+                                st.write("")
+                                add_btn = st.form_submit_button("➕", use_container_width=True)
+                            if add_btn:
                                 is_default = (new_hour == 7 and new_min == 0) or (new_hour == 20 and new_min == 0)
                                 is_dup = any(s["hour"] == new_hour and s["minute"] == new_min for s in custom_schedules)
                                 if is_default:
