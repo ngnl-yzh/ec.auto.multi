@@ -172,9 +172,9 @@ def get_all_users():
 
 
 # ─── 세션 ────────────────────────────────────────────────
-def create_session(session_id: str, user_id: int, ip_address: str = None, hours: int = 1):
+def create_session(session_id: str, user_id: int, ip_address: str = None, hours: int = 0, minutes: int = 30):
     from datetime import datetime, timedelta
-    expires_at = datetime.now() + timedelta(hours=hours)
+    expires_at = datetime.now() + timedelta(hours=hours, minutes=minutes)
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM sessions WHERE user_id = %s", (user_id,))
@@ -192,10 +192,11 @@ def get_session(session_id: str):
         )
         return cur.fetchone()
 
-def extend_session(session_id: str, hours: int = 1):
-    """세션 만료 시간 연장"""
+def extend_session(session_id: str, hours: int = 0, minutes: int = 30):
+    """세션 만료 시간 연장 (hours 또는 minutes 단위)"""
     from datetime import datetime, timedelta
-    new_expires = datetime.now() + timedelta(hours=hours)
+    delta = timedelta(hours=hours, minutes=minutes)
+    new_expires = datetime.now() + delta
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -230,7 +231,7 @@ def is_account_locked(email: str, max_attempts: int = 5, window_minutes: int = 1
             SELECT COUNT(*) FROM login_attempts
             WHERE email = %s
               AND success = FALSE
-              AND attempted_at > NOW() - INTERVAL '%s minutes'
+              AND attempted_at > NOW() - INTERVAL '1 minute' * %s
         """, (email.lower().strip(), window_minutes))
         count = cur.fetchone()[0]
         return count >= max_attempts
@@ -249,8 +250,10 @@ def get_remaining_lockout_minutes(email: str, window_minutes: int = 15) -> int:
             return 0
         from datetime import datetime, timedelta
         unlock_at = row[0] + timedelta(minutes=window_minutes)
-        remaining = (unlock_at - datetime.now()).seconds // 60
-        return max(0, remaining)
+        diff = unlock_at - datetime.now()
+        if diff.total_seconds() <= 0:
+            return 0
+        return max(0, int(diff.total_seconds() // 60) + 1)
 
 
 # ─── 수동 수집 횟수 ──────────────────────────────────────

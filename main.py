@@ -7,7 +7,7 @@ if __name__ == "__main__":
     print("🚀 경제뉴스 자동화 (멀티버전) 시작!")
 
     # 필수 환경변수 체크
-    required = ["DATABASE_URL", "OPENAI_API_KEY", "ENCRYPTION_KEY"]
+    required = ["DATABASE_URL", "OPENAI_API_KEY", "ENCRYPTION_KEY", "PASSWORD_SALT", "ADMIN_EMAIL", "ADMIN_PASSWORD"]
     missing = [v for v in required if not os.environ.get(v)]
     if missing:
         print(f"❌ 필수 환경변수 누락: {', '.join(missing)}")

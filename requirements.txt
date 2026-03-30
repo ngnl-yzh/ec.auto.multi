@@ -8,3 +8,4 @@ psycopg2-binary>=2.9.9
 httpx>=0.25.0
 bcrypt>=4.1.2
 cryptography>=42.0.0
+extra-streamlit-components>=0.1.60

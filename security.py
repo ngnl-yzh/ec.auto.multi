@@ -13,11 +13,14 @@ def _get_fernet() -> Fernet:
     if not raw_key:
         raise ValueError("ENCRYPTION_KEY 환경변수가 설정되지 않았습니다.")
 
-    # PBKDF2로 32바이트 키 파생
+    # PASSWORD_SALT를 같이 사용해 키 파생 강화 (없으면 고정값 fallback)
+    salt_str = os.environ.get("PASSWORD_SALT", "ecnews_static_salt_v1")
+    salt = salt_str.encode()[:32].ljust(32, b"0")  # 32바이트로 정규화
+
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=32,
-        salt=b"ecnews_static_salt_v1",  # 고정 salt (키 파생용)
+        salt=salt,
         iterations=100_000,
     )
     key = base64.urlsafe_b64encode(kdf.derive(raw_key.encode()))
@@ -57,13 +60,16 @@ def generate_session_id() -> str:
 
 # ─── 입력값 검증 ─────────────────────────────────────────
 def validate_email(email: str) -> tuple[bool, str]:
+    import re as _re
     email = email.strip()
     if not email:
         return False, "이메일을 입력해주세요."
-    if "@" not in email or "." not in email.split("@")[-1]:
-        return False, "올바른 이메일 형식이 아닙니다."
     if len(email) > 254:
         return False, "이메일이 너무 깁니다."
+    # RFC 5322 간소화 정규식
+    pattern = r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
+    if not _re.match(pattern, email):
+        return False, "올바른 이메일 형식이 아닙니다."
     return True, ""
 
 def validate_password(password: str) -> tuple[bool, str]:

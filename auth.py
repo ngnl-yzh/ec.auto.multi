@@ -75,7 +75,7 @@ def login(email: str, password: str, ip_address: str = None):
         update_user_role(user["user_id"], "admin")
 
     session_id = generate_session_id()
-    create_session(session_id, user["user_id"], ip_address=ip_address, hours=1)
+    create_session(session_id, user["user_id"], ip_address=ip_address, minutes=30)
 
     return True, session_id, user
 

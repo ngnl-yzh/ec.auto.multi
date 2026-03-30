@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, date, timedelta
 import os
 import re
+import random
 from openai import OpenAI
 import httpx
 from notion_client import Client as NotionClient
@@ -11,6 +12,22 @@ from zoneinfo import ZoneInfo
 KST = ZoneInfo('Asia/Seoul')
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+
+# OpenAI 클라이언트 싱글턴 (매번 생성하면 성능 낭비)
+_openai_client = None
+def get_openai_client():
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = OpenAI(api_key=OPENAI_API_KEY, http_client=httpx.Client())
+    return _openai_client
+
+# User-Agent 풀 (차단 방지)
+_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+]
 
 # ─── 뉴스 소스 ──────────────────────────────────────────
 NEWS_SOURCES = [
@@ -172,7 +189,7 @@ def get_existing_urls(notion_token, notion_db_id):
 # ─── URL 크롤링 ──────────────────────────────────────────
 def get_article_urls(source):
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        headers = {"User-Agent": random.choice(_USER_AGENTS)}
         res = requests.get(source["url"], headers=headers, timeout=10)
         urls = re.findall(source["pattern"], res.text)
         return list(dict.fromkeys(urls))
@@ -183,7 +200,7 @@ def get_article_urls(source):
 # ─── 기사 본문 크롤링 ────────────────────────────────────
 def get_article_content(url, summary_mode="standard"):
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        headers = {"User-Agent": random.choice(_USER_AGENTS)}
         res = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(res.text, "html.parser")
 
@@ -245,7 +262,7 @@ def matches_keywords(title, content, keywords):
 # ─── AI 경제 기사 분류 ────────────────────────────────────
 def is_economy_article(title, content):
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY, http_client=httpx.Client())
+        client = get_openai_client()
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -270,7 +287,7 @@ def is_economy_article(title, content):
 # ─── AI 요약 ─────────────────────────────────────────────
 def summarize_article(title, content, summary_mode="standard"):
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY, http_client=httpx.Client())
+        client = get_openai_client()
         system_prompt = PROMPT_DETAILED if summary_mode == "detailed" else PROMPT_STANDARD
         max_tokens = 1800 if summary_mode == "detailed" else 1000
 

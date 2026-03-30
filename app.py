@@ -60,26 +60,46 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ─── 세션 복원 + 갱신 ────────────────────────────────────
+# ─── 쿠키 기반 세션 복원 ────────────────────────────────
+def _get_cookie_manager():
+    try:
+        import extra_streamlit_components as stx
+        return stx.CookieManager(key="cookie_mgr")
+    except Exception:
+        return None
+
 def _restore_session():
     if st.session_state.get("logged_in"):
-        # 활동 시 세션 1시간 연장
         sid = st.session_state.get("session_id")
         if sid:
-            extend_session(sid, hours=1)
+            extend_session(sid, minutes=30)
         return
+
+    # 1) session_state에 session_id 있으면 복원 시도
     sid = st.session_state.get("session_id")
+
+    # 2) 없으면 쿠키에서 읽기
+    if not sid:
+        cm = _get_cookie_manager()
+        if cm:
+            try:
+                sid = cm.get("ec_session_id")
+            except Exception:
+                sid = None
+
     if not sid:
         return
+
     row = get_session(sid)
     if row:
         user = get_user_by_id(row["user_id"])
-        if user:
+        if user and user.get("role") != "blocked":
             st.session_state.update(
                 logged_in=True, user_id=user["user_id"],
-                email=user["email"], role=user.get("role", "trial")
+                email=user["email"], role=user.get("role", "trial"),
+                session_id=sid
             )
-            extend_session(sid, hours=1)
+            extend_session(sid, minutes=30)
 
 _restore_session()
 
@@ -89,6 +109,13 @@ def _do_logout():
     sid = st.session_state.get("session_id")
     if sid:
         logout(sid)
+    # 쿠키 삭제
+    cm = _get_cookie_manager()
+    if cm:
+        try:
+            cm.delete("ec_session_id")
+        except Exception:
+            pass
     for k in ["user_id", "email", "logged_in", "session_id", "role"]:
         st.session_state.pop(k, None)
     st.rerun()
@@ -124,6 +151,14 @@ def show_auth_page():
                             role=user.get("role", "trial"),
                             logged_in=True
                         )
+                        # 쿠키에 세션 ID 저장 (30일)
+                        cm = _get_cookie_manager()
+                        if cm:
+                            try:
+                                from datetime import date
+                                cm.set("ec_session_id", result, expires_at=datetime.now() + timedelta(days=30))
+                            except Exception:
+                                pass
                         st.rerun()
                     else:
                         st.error(f"❌ {result}")
@@ -297,7 +332,7 @@ def show_main_app():
         cc1, cc2 = st.columns(2)
         with cc1:
             if st.button("✅ 확인", use_container_width=True, type="primary"):
-                update_notion_credentials(user_id, "", "")
+                update_notion_credentials(user_id, None, None)
                 st.session_state.pop("confirm_notion_reset", None)
                 st.rerun()
         with cc2:
@@ -810,8 +845,8 @@ def show_admin_page():
     verified_at = st.session_state.get("admin_verified_at")
     is_verified = False
     if verified_at:
-        elapsed = (datetime.now() - verified_at).seconds // 60
-        if elapsed < 30:
+        elapsed_total = (datetime.now() - verified_at).total_seconds() / 60
+        if elapsed_total < 30:
             is_verified = True
         else:
             st.session_state.pop("admin_verified_at", None)
@@ -880,15 +915,16 @@ def show_admin_page():
     role_labels  = {"trial": "🟡 체험", "free": "🟢 무료", "blocked": "🔴 차단", "admin": "🛡️ 관리자"}
     role_options = ["trial", "free", "blocked", "admin"]
 
+    from datetime import timezone, timedelta as _td
+    _KST = timezone(_td(hours=9))
+    def _kst(dt):
+        if not dt: return '-'
+        return dt.replace(tzinfo=timezone.utc).astimezone(_KST).strftime('%Y-%m-%d %H:%M')
+
     for user in users:
         with st.expander(f"{user['email']}  —  {role_labels.get(user['role'], user['role'])}"):
             col1, col2 = st.columns([2, 1])
             with col1:
-                from datetime import timezone, timedelta as _td
-                KST = timezone(_td(hours=9))
-                def _kst(dt):
-                    if not dt: return '-'
-                    return dt.replace(tzinfo=timezone.utc).astimezone(KST).strftime('%Y-%m-%d %H:%M')
                 st.write(f"**가입일:** {_kst(user['created_at'])}")
                 st.write(f"**마지막 로그인:** {_kst(user['last_login'])}")
                 st.write(f"**Notion 연결:** {'✅' if user['notion_connected'] else '❌'}")
