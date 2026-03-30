@@ -14,7 +14,7 @@ from db import (
 from auth import register, login, logout
 from security import encrypt_token, decrypt_token, validate_notion_token, extract_notion_db_id
 from crawler import NEWS_SOURCES, run_crawler
-from scheduler import add_user_jobs, remove_user_jobs
+from scheduler import add_user_jobs, remove_user_jobs, sync_all_user_jobs
 
 st.set_page_config(page_title="📰 경제뉴스 자동화", page_icon="📰", layout="wide")
 
@@ -260,18 +260,19 @@ def show_main_app():
             except Exception:
                 pass
 
-    cfg             = get_settings(user_id)
-    keywords        = list(cfg.get("keywords") or [])
-    use_filter      = cfg.get("use_filter", False)
-    summary_mode    = cfg.get("summary_mode", "standard")
-    all_sources     = [s["name"] for s in NEWS_SOURCES]
-    enabled_sources = list(cfg.get("enabled_sources") or all_sources)
-    auto_enabled    = cfg.get("auto_enabled", False)
+    cfg              = get_settings(user_id)
+    keywords         = list(cfg.get("keywords") or [])
+    use_filter       = cfg.get("use_filter", False)
+    summary_mode     = cfg.get("summary_mode", "standard")
+    all_sources      = [s["name"] for s in NEWS_SOURCES]
+    enabled_sources  = list(cfg.get("enabled_sources") or all_sources)
+    auto_enabled     = cfg.get("auto_enabled", False)
+    custom_schedules = list(cfg.get("custom_schedules") or [])
 
     def _save(patch: dict):
         base = dict(keywords=keywords, use_filter=use_filter,
                     summary_mode=summary_mode, enabled_sources=enabled_sources,
-                    auto_enabled=auto_enabled)
+                    auto_enabled=auto_enabled, custom_schedules=custom_schedules)
         base.update(patch)
         save_settings(user_id, base)
 
@@ -355,11 +356,59 @@ def show_main_app():
                 auto_enabled = new_auto
                 _save({"auto_enabled": auto_enabled})
                 if new_auto:
-                    add_user_jobs(user_id)
+                    add_user_jobs(user_id, custom_schedules=custom_schedules)
                     st.toast("✅ 자동화 활성화됨!")
                 else:
                     remove_user_jobs(user_id)
                     st.toast("⏸ 자동화 비활성화됨.")
+
+            # 커스텀 스케줄 설정
+            if _role_auto != "trial":
+                with st.expander("⏰ 자동 수집 시간 추가 설정"):
+                    st.caption("기본: 오전 7시, 오후 8시 (고정) · 추가 시간을 설정하세요 (최대 24시간 이내)")
+                    
+                    # 현재 커스텀 스케줄 표시
+                    if custom_schedules:
+                        st.write("**현재 추가 스케줄:**")
+                        for i, sch in enumerate(custom_schedules):
+                            sc1, sc2 = st.columns([3, 1])
+                            with sc1:
+                                st.write(f"🕐 {sch['hour']:02d}:{sch['minute']:02d} KST")
+                            with sc2:
+                                if st.button("삭제", key=f"del_sch_{i}"):
+                                    custom_schedules.pop(i)
+                                    _save({"custom_schedules": custom_schedules})
+                                    if auto_enabled:
+                                        add_user_jobs(user_id, custom_schedules=custom_schedules)
+                                    st.rerun()
+
+                    # 새 스케줄 추가
+                    if len(custom_schedules) < 5:
+                        nc1, nc2, nc3 = st.columns([2, 2, 1])
+                        with nc1:
+                            new_hour = st.number_input("시 (0~23)", min_value=0, max_value=23, value=12, key="new_sch_h")
+                        with nc2:
+                            new_min = st.number_input("분 (0~59)", min_value=0, max_value=59, value=0, step=5, key="new_sch_m")
+                        with nc3:
+                            st.write("")
+                            st.write("")
+                            if st.button("➕ 추가", use_container_width=True):
+                                # 기본 스케줄(7:00, 20:00)과 중복 체크
+                                is_default = (new_hour == 7 and new_min == 0) or (new_hour == 20 and new_min == 0)
+                                is_dup = any(s["hour"] == new_hour and s["minute"] == new_min for s in custom_schedules)
+                                if is_default:
+                                    st.error("기본 스케줄과 중복됩니다.")
+                                elif is_dup:
+                                    st.error("이미 추가된 시간입니다.")
+                                else:
+                                    custom_schedules.append({"hour": new_hour, "minute": new_min})
+                                    _save({"custom_schedules": custom_schedules})
+                                    if auto_enabled:
+                                        add_user_jobs(user_id, custom_schedules=custom_schedules)
+                                    st.toast(f"✅ {new_hour:02d}:{new_min:02d} 스케줄 추가!")
+                                    st.rerun()
+                    else:
+                        st.caption("최대 5개까지 추가 가능합니다.")
 
             st.divider()
             st.subheader("▶ 수동 수집")
@@ -730,7 +779,7 @@ def _save_briefing_to_notion(notion_token: str, notion_db_id: str, group: str, b
         base_props = {
             "이름":  {"title": [{"text": {"content": title}}]},
             "날짜":  {"date": {"start": date.today().isoformat()}},
-            "시간대": {"rich_text": [{"text": {"content": group}}]},
+            "시간대": {"rich_text": [{"text": {"content": f"📋브리핑 | {group}"}}]},
             "요약":  {"rich_text": [{"text": {"content": briefing[:1990]}}]},
             "유형":  {"select": {"name": "브리핑"}},
         }

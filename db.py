@@ -93,6 +93,7 @@ def init_db():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_login_attempts_email ON login_attempts(email, attempted_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_crawl_log_user ON manual_crawl_log(user_id, created_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_briefing_log_user ON briefing_log(user_id, created_at)")
+        cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS custom_schedules JSONB DEFAULT '[]'")
 
         # 기본 설정값
         cur.execute("INSERT INTO admin_config (key, value) VALUES ('trial_weekly_limit', '15') ON CONFLICT (key) DO NOTHING")
@@ -317,6 +318,7 @@ def get_settings(user_id: int) -> dict:
             "summary_mode": "standard",
             "enabled_sources": [],
             "auto_enabled": False,
+            "custom_schedules": [],
         }
 
 def save_settings(user_id: int, settings: dict):
@@ -324,15 +326,16 @@ def save_settings(user_id: int, settings: dict):
         cur = conn.cursor()
         cur.execute("""
             INSERT INTO user_settings
-                (user_id, keywords, use_filter, summary_mode, enabled_sources, auto_enabled, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                (user_id, keywords, use_filter, summary_mode, enabled_sources, auto_enabled, custom_schedules, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (user_id) DO UPDATE
-                SET keywords        = EXCLUDED.keywords,
-                    use_filter      = EXCLUDED.use_filter,
-                    summary_mode    = EXCLUDED.summary_mode,
-                    enabled_sources = EXCLUDED.enabled_sources,
-                    auto_enabled    = EXCLUDED.auto_enabled,
-                    updated_at      = NOW()
+                SET keywords         = EXCLUDED.keywords,
+                    use_filter       = EXCLUDED.use_filter,
+                    summary_mode     = EXCLUDED.summary_mode,
+                    enabled_sources  = EXCLUDED.enabled_sources,
+                    auto_enabled     = EXCLUDED.auto_enabled,
+                    custom_schedules = EXCLUDED.custom_schedules,
+                    updated_at       = NOW()
         """, (
             user_id,
             json.dumps(settings.get("keywords", []), ensure_ascii=False),
@@ -340,4 +343,5 @@ def save_settings(user_id: int, settings: dict):
             settings.get("summary_mode", "standard"),
             json.dumps(settings.get("enabled_sources", []), ensure_ascii=False),
             settings.get("auto_enabled", False),
+            json.dumps(settings.get("custom_schedules", []), ensure_ascii=False),
         ))
