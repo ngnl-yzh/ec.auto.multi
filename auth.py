@@ -64,12 +64,18 @@ def login(email: str, password: str, ip_address: str = None):
     record_login_attempt(email, success=True, ip_address=ip_address)
     update_last_login(user["user_id"])
 
+    # 로그인 성공 시 실패 기록 초기화
+    from db import get_conn
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM login_attempts WHERE email = %s AND success = FALSE", (email,))
+
     # ADMIN_EMAIL 환경변수와 일치하면 자동 admin 승격
     if email == ADMIN_EMAIL and user.get("role") != "admin":
         update_user_role(user["user_id"], "admin")
 
     session_id = generate_session_id()
-    create_session(session_id, user["user_id"], ip_address=ip_address, hours=24)
+    create_session(session_id, user["user_id"], ip_address=ip_address, hours=1)
 
     return True, session_id, user
 
