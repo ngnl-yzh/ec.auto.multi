@@ -373,7 +373,8 @@ def show_main_app():
                         for i, sch in enumerate(custom_schedules):
                             sc1, sc2 = st.columns([3, 1])
                             with sc1:
-                                st.write(f"🕐 {sch['hour']:02d}:{sch['minute']:02d} KST")
+                                r = sch.get("range_hours", 5)
+                                st.write(f"🕐 {sch['hour']:02d}:{sch['minute']:02d} KST — 최근 {r}시간 수집")
                             with sc2:
                                 if st.button("삭제", key=f"del_sch_{i}"):
                                     custom_schedules.pop(i)
@@ -384,16 +385,18 @@ def show_main_app():
 
                     # 새 스케줄 추가
                     if len(custom_schedules) < 5:
-                        nc1, nc2, nc3 = st.columns([2, 2, 1])
+                        nc1, nc2, nc3, nc4 = st.columns([2, 2, 2, 1])
                         with nc1:
-                            new_hour = st.number_input("시 (0~23)", min_value=0, max_value=23, value=12, key="new_sch_h")
+                            new_hour = st.number_input("실행 시 (0~23)", min_value=0, max_value=23, value=12, key="new_sch_h")
                         with nc2:
-                            new_min = st.number_input("분 (0~59)", min_value=0, max_value=59, value=0, step=5, key="new_sch_m")
+                            new_min = st.number_input("실행 분 (0~59)", min_value=0, max_value=59, value=0, step=5, key="new_sch_m")
                         with nc3:
+                            new_range = st.number_input("수집 범위 (시간)", min_value=1, max_value=24, value=5, key="new_sch_r",
+                                                        help="실행 시각 기준 몇 시간 전부터 수집할지 설정")
+                        with nc4:
                             st.write("")
                             st.write("")
-                            if st.button("➕ 추가", use_container_width=True):
-                                # 기본 스케줄(7:00, 20:00)과 중복 체크
+                            if st.button("➕", use_container_width=True):
                                 is_default = (new_hour == 7 and new_min == 0) or (new_hour == 20 and new_min == 0)
                                 is_dup = any(s["hour"] == new_hour and s["minute"] == new_min for s in custom_schedules)
                                 if is_default:
@@ -401,11 +404,11 @@ def show_main_app():
                                 elif is_dup:
                                     st.error("이미 추가된 시간입니다.")
                                 else:
-                                    custom_schedules.append({"hour": new_hour, "minute": new_min})
+                                    custom_schedules.append({"hour": new_hour, "minute": new_min, "range_hours": new_range})
                                     _save({"custom_schedules": custom_schedules})
                                     if auto_enabled:
                                         add_user_jobs(user_id, custom_schedules=custom_schedules)
-                                    st.toast(f"✅ {new_hour:02d}:{new_min:02d} 스케줄 추가!")
+                                    st.toast(f"✅ {new_hour:02d}:{new_min:02d} (최근 {new_range}시간) 스케줄 추가!")
                                     st.rerun()
                     else:
                         st.caption("최대 5개까지 추가 가능합니다.")

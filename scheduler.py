@@ -14,7 +14,7 @@ def get_scheduler() -> BackgroundScheduler:
         print("✅ APScheduler 시작 (KST)")
     return _scheduler
 
-def _crawl_job(user_id: int, time_label: str = None):
+def _crawl_job(user_id: int, time_label: str = None, hours: int = None):
     from db import get_user_by_id, get_settings
     from crawler import run_crawler, NEWS_SOURCES
     from security import decrypt_token
@@ -50,6 +50,7 @@ def _crawl_job(user_id: int, time_label: str = None):
             notion_db_id=notion_db_id,
             settings=settings,
             time_label=time_label,
+            hours=hours,
         )
     except Exception as e:
         print(f"[스케줄] 오류 user_id={user_id}: {e}")
@@ -80,12 +81,13 @@ def add_user_jobs(user_id: int, custom_schedules: list = None):
     # 커스텀 스케줄
     if custom_schedules:
         for i, sch in enumerate(custom_schedules):
-            hour   = sch.get("hour", 0)
-            minute = sch.get("minute", 0)
+            hour        = sch.get("hour", 0)
+            minute      = sch.get("minute", 0)
+            range_hours = sch.get("range_hours", 5)
             scheduler.add_job(
                 _crawl_job,
                 trigger=CronTrigger(hour=hour, minute=minute, timezone=KST),
-                args=[user_id, "수동"],
+                args=[user_id, "수동", range_hours],
                 id=f"{user_id}_custom_{i}", replace_existing=True,
             )
 
