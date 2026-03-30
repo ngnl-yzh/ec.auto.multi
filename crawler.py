@@ -307,7 +307,7 @@ def save_to_notion(title, url, summary, source_name, time_slot, notion_token, no
         try:
             notion.pages.create(
                 parent={"database_id": notion_db_id},
-                properties=base_props
+                properties={**base_props, "유형": {"select": {"name": "기사"}}}
             )
             print(f"✅ Notion 저장 완료 (상태 제외): {title[:30]}...")
         except Exception as e:
