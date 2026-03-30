@@ -317,7 +317,7 @@ def save_to_notion(title, url, summary, source_name, time_slot, notion_token, no
             print(f"❌ Notion 저장 실패: {e}")
 
 # ─── 메인 실행 ───────────────────────────────────────────
-def run_crawler(notion_token, notion_db_id, settings: dict, time_label="오전", hours=None):
+def run_crawler(notion_token, notion_db_id, settings: dict, time_label="오전", hours=None, start_time=None, end_time=None, time_slot=None):
     """
     notion_token  : 유저의 Notion access_token
     notion_db_id  : 유저의 Notion DB ID
@@ -327,8 +327,10 @@ def run_crawler(notion_token, notion_db_id, settings: dict, time_label="오전",
     print(f"📰 경제뉴스 수집 시작 [{time_label}] - {datetime.now(KST).strftime('%Y-%m-%d %H:%M')}")
     print(f"{'='*50}\n")
 
-    start_time, end_time = get_time_range(time_label, hours=hours)
-    time_slot = get_time_slot_label(time_label, hours=hours)
+    if start_time is None or end_time is None:
+        start_time, end_time = get_time_range(time_label, hours=hours)
+    if time_slot is None:
+        time_slot = get_time_slot_label(time_label, hours=hours)
 
     keywords        = settings.get("keywords", [])
     use_filter      = settings.get("use_filter", False)
