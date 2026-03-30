@@ -296,8 +296,10 @@ def save_to_notion(title, url, summary, source_name, time_slot, notion_token, no
         "날짜":  {"date": {"start": date.today().isoformat()}},
         "요약":  {"rich_text": [{"text": {"content": summary[:2000]}}]},
         "시간대": {"rich_text": [{"text": {"content": time_slot}}]},
+        "유형":  {"select": {"name": "기사"}},
     }
     try:
+        # 상태 포함해서 먼저 시도
         notion.pages.create(
             parent={"database_id": notion_db_id},
             properties={**base_props, "상태": {"status": {"name": "읽기 전"}}}
@@ -305,9 +307,10 @@ def save_to_notion(title, url, summary, source_name, time_slot, notion_token, no
         print(f"✅ Notion 저장 완료: {title[:30]}...")
     except Exception:
         try:
+            # 상태 없이 재시도 (상태 옵션 미설정 시)
             notion.pages.create(
                 parent={"database_id": notion_db_id},
-                properties={**base_props, "유형": {"select": {"name": "기사"}}}
+                properties=base_props
             )
             print(f"✅ Notion 저장 완료 (상태 제외): {title[:30]}...")
         except Exception as e:
