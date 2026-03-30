@@ -728,49 +728,143 @@ def _generate_briefing(articles: list) -> str:
             api_key=os.environ.get("OPENAI_API_KEY"),
             http_client=httpx.Client()
         )
-        articles_text = "
-
-".join([
-            f"[기사 {i+1}] {a['title']}
-요약: {a['summary']}"
-            for i, a in enumerate(articles)
-        ])
+        parts = []
+        for i, a in enumerate(articles):
+            parts.append(f"[기사 {i+1}] " + a['title'])
+            parts.append("요약: " + a['summary'])
+            parts.append("")
+        articles_text = chr(10).join(parts)
+        sp = "당신은 경제 뉴스 브리퍼입니다. 카테고리별로 묶어 브리핑해주세요. "
+        sp += "## [카테고리명] 형식으로, 유사주제끼리 묶고, 1줄 요약, 투자시사점 위주, "
+        sp += "마지막에 오늘의 핵심 메시지 2~3줄 요약."
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {
-                    "role": "system",
-                    "content": """당신은 경제 뉴스 브리퍼입니다. 여러 기사들을 받아서 카테고리별로 묶어 간결하게 브리핑해주세요.
-
-형식:
-## 🏷️ [카테고리명] (예: 반도체/IT, 금융/환율, 부동산, 에너지, 산업/기업 등)
-- 핵심 내용 1줄 요약 (관련 기사 제목 포함)
-- 핵심 내용 1줄 요약
-
-## 🏷️ [카테고리명]
-...
-
----
-📌 **오늘의 핵심 메시지** (전체를 관통하는 2~3줄 핵심 요약)
-
-규칙:
-- 유사한 주제끼리 반드시 묶을 것
-- 각 항목은 1줄로 간결하게
-- 투자/경제적 시사점 위주로 작성
-- 전문용어는 쉽게 풀어서"""
-                },
-                {
-                    "role": "user",
-                    "content": f"다음 {len(articles)}개 기사를 브리핑해주세요:
-
-{articles_text}"
-                }
+                {"role": "system", "content": sp},
+                {"role": "user", "content": f"다음 {len(articles)}개 기사 브리핑:" + chr(10) + articles_text}
             ],
             max_tokens=2000
         )
         return response.choices[0].message.content
     except Exception as e:
         return f"브리핑 생성 실패: {e}"
+
+def _save_briefing_to_notion(notion_token: str, notion_db_id: str, group: str, briefing: str, article_count: int):
+    """브리핑 결과를 Notion에 저장"""
+    try:
+        from notion_client import Client as NotionClient
+        from datetime import date
+        notion = NotionClient(auth=notion_token)
+        notion.pages.create(
+            parent={"database_id": notion_db_id},
+            properties={
+                "이름":  {"title": [{"text": {"content": f"📋 브리핑 — {group}"}}]},
+                "날짜":  {"date": {"start": date.today().isoformat()}},
+                "시간대": {"rich_text": [{"text": {"content": group}}]},
+                "요약":  {"rich_text": [{"text": {"content": briefing[:2000]}}]},
+                "유형":  {"select": {"name": "브리핑"}},
+            }
+        )
+        return True
+    except Exception as e:
+        print(f"브리핑 저장 실패: {e}")
+        return False
+
+def _get_notion_groups(notion_token: str, notion_db_id: str) -> list:
+    """Notion DB에서 시간대 그룹 목록 조회 (최근 7일)"""
+    try:
+        from notion_client import Client as NotionClient
+        from datetime import timedelta
+        notion = NotionClient(auth=notion_token)
+        results = notion.databases.query(
+            database_id=notion_db_id,
+            filter={
+                "property": "날짜",
+                "date": {"on_or_after": (datetime.now() - timedelta(days=7)).date().isoformat()}
+            },
+            page_size=100
+        )
+        groups = []
+        seen = set()
+        for page in results.get("results", []):
+            slot = page.get("properties", {}).get("시간대", {})
+            slot_text = ""
+            if slot.get("rich_text"):
+                slot_text = slot["rich_text"][0]["text"]["content"]
+            if slot_text and slot_text not in seen:
+                seen.add(slot_text)
+                groups.append(slot_text)
+        # 최신순 정렬
+        groups.sort(reverse=True)
+        return groups
+    except Exception as e:
+        print(f"Notion 그룹 조회 실패: {e}")
+        return []
+
+def _get_articles_by_group(notion_token: str, notion_db_id: str, group: str) -> list:
+    """특정 시간대 그룹의 기사 목록 조회"""
+    try:
+        from notion_client import Client as NotionClient
+        notion = NotionClient(auth=notion_token)
+        results = notion.databases.query(
+            database_id=notion_db_id,
+            filter={
+                "property": "시간대",
+                "rich_text": {"equals": group}
+            },
+            page_size=50
+        )
+        articles = []
+        for page in results.get("results", []):
+            props = page.get("properties", {})
+            title = ""
+            if props.get("이름", {}).get("title"):
+                title = props["이름"]["title"][0]["text"]["content"]
+            summary = ""
+            if props.get("요약", {}).get("rich_text"):
+                summary = props["요약"]["rich_text"][0]["text"]["content"]
+            url = props.get("URL", {}).get("url", "")
+            if title and summary and summary != "요약 실패":
+                articles.append({"title": title, "summary": summary, "url": url})
+        return articles
+    except Exception as e:
+        print(f"Notion 기사 조회 실패: {e}")
+        return []
+
+def _save_briefing_to_notion(notion_token: str, notion_db_id: str, time_slot: str, briefing: str, article_count: int):
+    """브리핑 결과를 Notion DB에 저장"""
+    try:
+        from notion_client import Client as NotionClient
+        from datetime import date
+        notion = NotionClient(auth=notion_token)
+        title = f"{time_slot} 브리핑 ({article_count}개 기사)"
+        try:
+            notion.pages.create(
+                parent={"database_id": notion_db_id},
+                properties={
+                    "이름":  {"title": [{"text": {"content": title}}]},
+                    "날짜":  {"date": {"start": date.today().isoformat()}},
+                    "시간대": {"rich_text": [{"text": {"content": time_slot}}]},
+                    "요약":  {"rich_text": [{"text": {"content": briefing[:2000]}}]},
+                    "유형":  {"select": {"name": "브리핑"}},
+                    "상태":  {"status": {"name": "읽기 전"}},
+                }
+            )
+        except Exception:
+            # 상태 옵션 없을 시 상태 제외하고 저장
+            notion.pages.create(
+                parent={"database_id": notion_db_id},
+                properties={
+                    "이름":  {"title": [{"text": {"content": title}}]},
+                    "날짜":  {"date": {"start": date.today().isoformat()}},
+                    "시간대": {"rich_text": [{"text": {"content": time_slot}}]},
+                    "요약":  {"rich_text": [{"text": {"content": briefing[:2000]}}]},
+                    "유형":  {"select": {"name": "브리핑"}},
+                }
+            )
+        print(f"✅ 브리핑 Notion 저장 완료: {title}")
+    except Exception as e:
+        print(f"❌ 브리핑 Notion 저장 실패: {e}")
 
 
 def _save_briefing_to_notion(notion_token: str, notion_db_id: str, group: str, briefing: str, article_count: int):
