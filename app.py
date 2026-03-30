@@ -4,18 +4,18 @@ from datetime import datetime, timedelta
 
 from db import (
     get_user_by_id, get_settings, save_settings,
-    update_notion_credentials, get_session,
+    update_notion_credentials, get_session, extend_session,
     get_all_users, update_user_role,
     record_manual_crawl, get_weekly_crawl_count,
+    record_briefing, get_weekly_briefing_count,
     get_admin_config, set_admin_config,
-    update_user_custom_limit
+    update_user_custom_limit, update_user_custom_briefing_limit
 )
 from auth import register, login, logout
 from security import encrypt_token, decrypt_token, validate_notion_token, extract_notion_db_id
 from crawler import NEWS_SOURCES, run_crawler
 from scheduler import add_user_jobs, remove_user_jobs
 
-# ─── 페이지 설정 ─────────────────────────────────────────
 st.set_page_config(page_title="📰 경제뉴스 자동화", page_icon="📰", layout="wide")
 
 st.markdown("""
@@ -51,18 +51,22 @@ st.markdown("""
     }
     .conn-badge {
         display: inline-block; padding: 4px 12px;
-        border-radius: 20px; font-size: 0.85rem; font-weight: 600;
-        margin: 2px;
+        border-radius: 20px; font-size: 0.85rem; font-weight: 600; margin: 2px;
     }
     .conn-ok  { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
     .conn-err { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+    .limit-info { background: #f0f9ff; border-radius: 6px; padding: 6px 10px; font-size: 0.85rem; color: #0369a1; margin: 4px 0; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ─── 세션 복원 ───────────────────────────────────────────
+# ─── 세션 복원 + 갱신 ────────────────────────────────────
 def _restore_session():
     if st.session_state.get("logged_in"):
+        # 활동 시 세션 1시간 연장
+        sid = st.session_state.get("session_id")
+        if sid:
+            extend_session(sid, hours=1)
         return
     sid = st.session_state.get("session_id")
     if not sid:
@@ -71,7 +75,11 @@ def _restore_session():
     if row:
         user = get_user_by_id(row["user_id"])
         if user:
-            st.session_state.update(logged_in=True, user_id=user["user_id"], email=user["email"], role=user.get("role","trial"))
+            st.session_state.update(
+                logged_in=True, user_id=user["user_id"],
+                email=user["email"], role=user.get("role", "trial")
+            )
+            extend_session(sid, hours=1)
 
 _restore_session()
 
@@ -81,7 +89,7 @@ def _do_logout():
     sid = st.session_state.get("session_id")
     if sid:
         logout(sid)
-    for k in ["user_id", "email", "logged_in", "session_id"]:
+    for k in ["user_id", "email", "logged_in", "session_id", "role"]:
         st.session_state.pop(k, None)
     st.rerun()
 
@@ -98,7 +106,6 @@ def show_auth_page():
 
         t_login, t_reg = st.tabs(["🔐 로그인", "✏️ 회원가입"])
 
-        # 로그인
         with t_login:
             with st.form("login_form"):
                 email    = st.text_input("이메일", placeholder="example@email.com")
@@ -121,7 +128,6 @@ def show_auth_page():
                     else:
                         st.error(f"❌ {result}")
 
-        # 회원가입
         with t_reg:
             with st.form("reg_form"):
                 r_email = st.text_input("이메일", placeholder="example@email.com", key="re")
@@ -154,7 +160,6 @@ def show_notion_setup_page(user_id: int):
     st.divider()
     col_guide, col_form = st.columns([1.1, 1])
 
-    # 가이드
     with col_guide:
         st.subheader("📋 Notion 연결 가이드")
         st.markdown("#### 1단계. 토큰 발급")
@@ -192,7 +197,6 @@ def show_notion_setup_page(user_id: int):
         </div>
         """, unsafe_allow_html=True)
 
-    # 입력 폼
     with col_form:
         st.subheader("🔑 연결 정보 입력")
         with st.form("notion_form"):
@@ -215,7 +219,7 @@ def show_notion_setup_page(user_id: int):
             else:
                 db_id = extract_notion_db_id(db_input)
                 if not db_id:
-                    st.error("❌ DB ID를 찾을 수 없습니다. URL 또는 32자리 ID를 입력해주세요.")
+                    st.error("❌ DB ID를 찾을 수 없습니다.")
                 else:
                     with st.spinner("Notion 연결 확인 중..."):
                         if _test_notion(token, db_id):
@@ -246,7 +250,6 @@ def show_main_app():
     email    = st.session_state["email"]
     user_row = get_user_by_id(user_id)
 
-    # Notion 토큰 복호화
     notion_token, notion_db_id = None, None
     if user_row:
         notion_db_id = user_row.get("notion_db_id")
@@ -257,7 +260,6 @@ def show_main_app():
             except Exception:
                 pass
 
-    # 설정 로드
     cfg             = get_settings(user_id)
     keywords        = list(cfg.get("keywords") or [])
     use_filter      = cfg.get("use_filter", False)
@@ -283,11 +285,24 @@ def show_main_app():
         b1, b2 = st.columns(2)
         with b1:
             if st.button("⚙️ Notion 재설정", use_container_width=True):
-                update_notion_credentials(user_id, "", "")
-                st.rerun()
+                st.session_state["confirm_notion_reset"] = True
         with b2:
             if st.button("로그아웃", use_container_width=True):
                 _do_logout()
+
+    # Notion 재설정 확인 팝업
+    if st.session_state.get("confirm_notion_reset"):
+        st.warning("⚠️ Notion 연결을 해제하시겠습니까? 다시 설정해야 합니다.")
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            if st.button("✅ 확인", use_container_width=True, type="primary"):
+                update_notion_credentials(user_id, "", "")
+                st.session_state.pop("confirm_notion_reset", None)
+                st.rerun()
+        with cc2:
+            if st.button("❌ 취소", use_container_width=True):
+                st.session_state.pop("confirm_notion_reset", None)
+                st.rerun()
 
     tab1, tab2, tab3, tab4 = st.tabs(["⚡ 실행", "🔍 키워드 설정", "📡 소스 설정", "📋 브리핑"])
 
@@ -298,7 +313,6 @@ def show_main_app():
         left, right = st.columns(2)
 
         with left:
-            # 요약 모드
             st.subheader("📝 요약 모드")
             new_mode = st.radio(
                 "요약",
@@ -324,8 +338,6 @@ def show_main_app():
                 st.toast("요약 모드 저장됨!")
 
             st.divider()
-
-            # 자동 스케줄
             st.subheader("🕐 자동 실행 스케줄")
             c1, c2 = st.columns(2)
             with c1:
@@ -334,7 +346,6 @@ def show_main_app():
                 st.markdown('<div class="schedule-box">🌆 <b>오후 8:00 KST</b><br>매일 자동 실행</div>', unsafe_allow_html=True)
 
         with right:
-            # 자동화 토글
             st.subheader("🤖 자동화 설정")
             _role_auto = st.session_state.get("role", "trial")
             if _role_auto == "trial":
@@ -351,8 +362,6 @@ def show_main_app():
                     st.toast("⏸ 자동화 비활성화됨.")
 
             st.divider()
-
-            # 수동 수집
             st.subheader("▶ 수동 수집")
             hour_map = {"1시간":1,"3시간":3,"6시간":6,"12시간":12,"24시간":24,"36시간":36,"48시간":48}
             sel_range = st.select_slider("수집 범위", options=list(hour_map.keys()), value="6시간")
@@ -361,14 +370,13 @@ def show_main_app():
             now = datetime.now(ZoneInfo('Asia/Seoul')).replace(tzinfo=None)
             st.caption(f"📅 {(now - timedelta(hours=sel_hours)).strftime('%m/%d %H:%M')} ~ {now.strftime('%m/%d %H:%M')} (KST)")
 
-            # 권한별 수동 수집 제한 (개별 설정 우선)
             _role = st.session_state.get("role", "trial")
             _user_row = get_user_by_id(user_id)
             _custom_limit = _user_row.get("custom_weekly_limit") if _user_row else None
             if _role == "admin":
                 _limit = 99999
             elif _custom_limit is not None:
-                _limit = _custom_limit  # 개별 설정값 우선
+                _limit = _custom_limit
             elif _role == "trial":
                 _limit = int(get_admin_config("trial_weekly_limit") or 15)
             else:
@@ -378,7 +386,7 @@ def show_main_app():
             _remaining = max(0, _limit - _used)
 
             if _role != "admin":
-                st.caption(f"📊 이번 주 수동 수집: {_used} / {_limit}회 (남은 횟수: {_remaining}회)")
+                st.markdown(f'<div class="limit-info">📊 이번 주 수동 수집: <b>{_used} / {_limit}회</b> (남은 횟수: <b>{_remaining}회</b>)</div>', unsafe_allow_html=True)
 
             if st.button("📥 수동 수집 시작", use_container_width=True, type="primary",
                          disabled=(_role in ["trial", "free"] and _remaining <= 0)):
@@ -399,8 +407,6 @@ def show_main_app():
                     st.success(f"✅ 완료! {saved}개 저장, {skipped}개 중복 건너뜀")
 
             st.divider()
-
-            # 연결 상태
             st.subheader("🔌 연결 상태")
             openai_ok = bool(os.environ.get("OPENAI_API_KEY"))
             st.markdown(
@@ -411,8 +417,6 @@ def show_main_app():
             )
 
             st.divider()
-
-            # 활성 소스
             st.subheader("📡 현재 활성 소스")
             active   = [s for s in all_sources if s in enabled_sources]
             inactive = [s for s in all_sources if s not in enabled_sources]
@@ -439,16 +443,19 @@ def show_main_app():
                     if kw and kw not in keywords and len(kw) <= 20:
                         keywords.append(kw)
                         _save({"keywords": keywords, "use_filter": new_filter})
+                        st.toast(f"✅ '{kw}' 키워드 추가됨!")
                         st.rerun()
             with d_col:
                 if st.button("🗑️ 전체 삭제", use_container_width=True):
                     keywords = []
                     _save({"keywords": [], "use_filter": new_filter})
+                    st.toast("🗑️ 키워드 전체 삭제됨.")
                     st.rerun()
 
             if new_filter != use_filter:
                 use_filter = new_filter
                 _save({"use_filter": use_filter})
+                st.toast(f"{'✅ 키워드 필터 활성화!' if use_filter else '⏸ 키워드 필터 비활성화'}")
 
         with kw_right:
             st.subheader("현재 키워드")
@@ -499,7 +506,7 @@ def show_main_app():
                 else:
                     enabled_sources = new_enabled
                     _save({"enabled_sources": enabled_sources})
-                    st.toast(f"✅ 저장 완료! 활성 {len(enabled_sources)}개")
+                    st.toast(f"✅ 소스 설정 저장 완료! 활성 {len(enabled_sources)}개")
                     st.rerun()
         with s2:
             if st.button("전체 선택", use_container_width=True):
@@ -531,35 +538,68 @@ def show_main_app():
         if not notion_token or not notion_db_id:
             st.error("❌ Notion 연결이 필요합니다.")
         else:
-            # Notion에서 시간대 그룹 목록 조회
+            # 브리핑 횟수 제한
+            _b_role = st.session_state.get("role", "trial")
+            _b_user_row = get_user_by_id(user_id)
+            _b_custom = _b_user_row.get("custom_briefing_limit") if _b_user_row else None
+            if _b_role == "admin":
+                _b_limit = 99999
+            elif _b_custom is not None:
+                _b_limit = _b_custom
+            elif _b_role == "trial":
+                _b_limit = int(get_admin_config("trial_briefing_limit") or 5)
+            else:
+                _b_limit = int(get_admin_config("free_briefing_limit") or 10)
+
+            _b_used = get_weekly_briefing_count(user_id)
+            _b_remaining = max(0, _b_limit - _b_used)
+
+            if _b_role != "admin":
+                st.markdown(f'<div class="limit-info">📊 이번 주 브리핑: <b>{_b_used} / {_b_limit}회</b> (남은 횟수: <b>{_b_remaining}회</b>)</div>', unsafe_allow_html=True)
+
+            # 브리핑 모드 선택
+            b_col1, b_col2 = st.columns(2)
+            with b_col1:
+                briefing_mode = st.radio(
+                    "브리핑 모드",
+                    ["standard", "detailed"],
+                    format_func=lambda x: "📄 기본 브리핑" if x == "standard" else "🔍 상세 브리핑",
+                    horizontal=True,
+                    label_visibility="collapsed"
+                )
+            if briefing_mode == "standard":
+                st.caption("📄 기본 브리핑 — 카테고리별 핵심 1줄 요약 + 오늘의 핵심 메시지")
+            else:
+                st.caption("🔍 상세 브리핑 — 카테고리별 심층 분석 + 투자 시사점 + 리스크 요인")
+
             with st.spinner("Notion에서 데이터 불러오는 중..."):
                 groups = _get_notion_groups(notion_token, notion_db_id)
 
             if not groups:
                 st.info("저장된 기사가 없습니다.")
             else:
-                selected_group = st.selectbox(
-                    "브리핑할 그룹 선택",
-                    options=groups,
-                    index=0
-                )
+                selected_group = st.selectbox("브리핑할 그룹 선택", options=groups, index=0)
 
-                if st.button("📋 브리핑 생성", type="primary", use_container_width=True):
-                    with st.spinner("기사를 분석하고 브리핑을 생성 중입니다..."):
-                        articles = _get_articles_by_group(notion_token, notion_db_id, selected_group)
-                        if not articles:
-                            st.warning("해당 그룹에 기사가 없습니다.")
-                        else:
-                            briefing = _generate_briefing(articles)
-                            st.session_state["briefing_result"] = briefing
-                            st.session_state["briefing_group"] = selected_group
-                            # Notion에 자동 저장
-                            saved = _save_briefing_to_notion(
-                                notion_token, notion_db_id,
-                                selected_group, briefing, len(articles)
-                            )
-                            if saved:
-                                st.toast("✅ 브리핑이 Notion에 저장됐습니다!")
+                if st.button("📋 브리핑 생성", type="primary", use_container_width=True,
+                             disabled=(_b_role in ["trial", "free"] and _b_remaining <= 0)):
+                    if _b_role in ["trial", "free"] and _b_remaining <= 0:
+                        st.error(f"❌ 이번 주 브리핑 횟수({_b_limit}회)를 모두 사용했습니다.")
+                    else:
+                        with st.spinner("기사를 분석하고 브리핑을 생성 중입니다..."):
+                            articles = _get_articles_by_group(notion_token, notion_db_id, selected_group)
+                            if not articles:
+                                st.warning("해당 그룹에 기사가 없습니다.")
+                            else:
+                                briefing = _generate_briefing(articles, mode=briefing_mode)
+                                saved = _save_briefing_to_notion(
+                                    notion_token, notion_db_id,
+                                    selected_group, briefing, len(articles)
+                                )
+                                record_briefing(user_id)
+                                st.session_state["briefing_result"] = briefing
+                                st.session_state["briefing_group"] = selected_group
+                                if saved:
+                                    st.toast("✅ 브리핑이 Notion에 저장됐습니다!")
 
             if st.session_state.get("briefing_result"):
                 st.divider()
@@ -568,74 +608,29 @@ def show_main_app():
 
 
 # ════════════════════════════════════════════════════════
-# 브리핑 헬퍼 함수 (중복 제거 정리본)
+# 브리핑 헬퍼 함수
 # ════════════════════════════════════════════════════════
-def _bulk_update_article_type(notion_token: str, notion_db_id: str) -> int:
-    """기존 기사들에 유형: 기사 일괄 적용"""
-    try:
-        from notion_client import Client as NotionClient
-        notion = NotionClient(auth=notion_token)
-        updated = 0
-        has_more = True
-        start_cursor = None
-
-        while has_more:
-            kwargs = {"database_id": notion_db_id, "page_size": 100,
-                      "filter": {"property": "유형", "select": {"is_empty": True}}}
-            if start_cursor:
-                kwargs["start_cursor"] = start_cursor
-            results = notion.databases.query(**kwargs)
-
-            for page in results.get("results", []):
-                notion.pages.update(
-                    page_id=page["id"],
-                    properties={"유형": {"select": {"name": "기사"}}}
-                )
-                updated += 1
-
-            has_more = results.get("has_more", False)
-            start_cursor = results.get("next_cursor")
-
-        return updated
-    except Exception as e:
-        print(f"일괄 업데이트 실패: {e}")
-        return 0
-
-
 def _get_notion_groups(notion_token: str, notion_db_id: str) -> list:
-    """Notion DB에서 시간대 그룹 목록 조회 (최근 7일, 기사 유형만)"""
     try:
         from notion_client import Client as NotionClient
-        from datetime import timedelta
         notion = NotionClient(auth=notion_token)
-
-        # 유형이 "기사"인 항목만 조회 (브리핑 항목 제외)
-        # OR 조건: 유형=기사 OR 유형 없음(구버전 호환)
         results = notion.databases.query(
             database_id=notion_db_id,
             filter={
                 "and": [
-                    {
-                        "property": "날짜",
-                        "date": {"on_or_after": (datetime.now() - timedelta(days=7)).date().isoformat()}
-                    },
-                    {
-                        "or": [
-                            {"property": "유형", "select": {"equals": "기사"}},
-                            {"property": "유형", "select": {"is_empty": True}},
-                        ]
-                    }
+                    {"property": "날짜", "date": {"on_or_after": (datetime.now() - timedelta(days=7)).date().isoformat()}},
+                    {"or": [
+                        {"property": "유형", "select": {"equals": "기사"}},
+                        {"property": "유형", "select": {"is_empty": True}},
+                    ]}
                 ]
             },
             page_size=100
         )
-        groups = []
-        seen = set()
+        groups, seen = [], set()
         for page in results.get("results", []):
             slot = page.get("properties", {}).get("시간대", {})
-            slot_text = ""
-            if slot.get("rich_text"):
-                slot_text = slot["rich_text"][0]["text"]["content"]
+            slot_text = slot["rich_text"][0]["text"]["content"] if slot.get("rich_text") else ""
             if slot_text and slot_text not in seen:
                 seen.add(slot_text)
                 groups.append(slot_text)
@@ -647,7 +642,6 @@ def _get_notion_groups(notion_token: str, notion_db_id: str) -> list:
 
 
 def _get_articles_by_group(notion_token: str, notion_db_id: str, group: str) -> list:
-    """특정 시간대 그룹의 기사 목록 조회 (브리핑 항목 제외)"""
     try:
         from notion_client import Client as NotionClient
         notion = NotionClient(auth=notion_token)
@@ -655,16 +649,11 @@ def _get_articles_by_group(notion_token: str, notion_db_id: str, group: str) -> 
             database_id=notion_db_id,
             filter={
                 "and": [
-                    {
-                        "property": "시간대",
-                        "rich_text": {"equals": group}
-                    },
-                    {
-                        "or": [
-                            {"property": "유형", "select": {"equals": "기사"}},
-                            {"property": "유형", "select": {"is_empty": True}},
-                        ]
-                    }
+                    {"property": "시간대", "rich_text": {"equals": group}},
+                    {"or": [
+                        {"property": "유형", "select": {"equals": "기사"}},
+                        {"property": "유형", "select": {"is_empty": True}},
+                    ]}
                 ]
             },
             page_size=50
@@ -672,12 +661,8 @@ def _get_articles_by_group(notion_token: str, notion_db_id: str, group: str) -> 
         articles = []
         for page in results.get("results", []):
             props = page.get("properties", {})
-            title = ""
-            if props.get("이름", {}).get("title"):
-                title = props["이름"]["title"][0]["text"]["content"]
-            summary = ""
-            if props.get("요약", {}).get("rich_text"):
-                summary = props["요약"]["rich_text"][0]["text"]["content"]
+            title = props["이름"]["title"][0]["text"]["content"] if props.get("이름", {}).get("title") else ""
+            summary = props["요약"]["rich_text"][0]["text"]["content"] if props.get("요약", {}).get("rich_text") else ""
             url = props.get("URL", {}).get("url", "")
             if title and summary and summary != "요약 실패":
                 articles.append({"title": title, "summary": summary, "url": url})
@@ -687,31 +672,49 @@ def _get_articles_by_group(notion_token: str, notion_db_id: str, group: str) -> 
         return []
 
 
-def _generate_briefing(articles: list) -> str:
-    """GPT로 카테고리별 브리핑 생성"""
+def _generate_briefing(articles: list, mode: str = "standard") -> str:
     try:
         from openai import OpenAI
         import httpx
-        client = OpenAI(
-            api_key=os.environ.get("OPENAI_API_KEY"),
-            http_client=httpx.Client()
-        )
-        parts = []
-        for i, a in enumerate(articles):
-            parts.append(f"[기사 {i+1}] " + a["title"])
-            parts.append("요약: " + a["summary"])
-            parts.append("")
-        articles_text = chr(10).join(parts)
-        sp = "당신은 경제 뉴스 브리퍼입니다. 카테고리별로 묶어 브리핑해주세요. "
-        sp += "## [카테고리명] 형식으로, 유사주제끼리 묶고, 1줄 요약, 투자시사점 위주, "
-        sp += "마지막에 오늘의 핵심 메시지 2~3줄 요약."
+        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), http_client=httpx.Client())
+
+        articles_text = "\n\n".join([
+            f"[기사 {i+1}] {a['title']}\n요약: {a['summary']}"
+            for i, a in enumerate(articles)
+        ])
+
+        if mode == "detailed":
+            system_prompt = """당신은 경제 뉴스 전문 분석가입니다. 기사들을 카테고리별로 묶어 상세하게 분석해주세요.
+
+형식:
+## 🏷️ [카테고리명]
+- **핵심 내용**: 1~2줄 요약
+- **세부 분석**: 배경, 원인, 영향 설명
+- **투자 시사점**: 단기/중기 관점
+- **리스크**: 주의할 점
+
+---
+📌 **오늘의 핵심 메시지**
+전체를 관통하는 3~4줄 핵심 요약 및 투자 관점"""
+        else:
+            system_prompt = """당신은 경제 뉴스 브리퍼입니다. 카테고리별로 묶어 간결하게 브리핑해주세요.
+
+형식:
+## 🏷️ [카테고리명]
+- 핵심 내용 1줄 요약
+- 핵심 내용 1줄 요약
+
+---
+📌 **오늘의 핵심 메시지**
+전체를 관통하는 2~3줄 핵심 요약"""
+
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": sp},
-                {"role": "user", "content": f"다음 {len(articles)}개 기사 브리핑:" + chr(10) + articles_text}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"다음 {len(articles)}개 기사를 브리핑해주세요:\n\n{articles_text}"}
             ],
-            max_tokens=2000
+            max_tokens=2500 if mode == "detailed" else 2000
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -719,7 +722,6 @@ def _generate_briefing(articles: list) -> str:
 
 
 def _save_briefing_to_notion(notion_token: str, notion_db_id: str, group: str, briefing: str, article_count: int) -> bool:
-    """브리핑 결과를 Notion DB에 저장"""
     try:
         from notion_client import Client as NotionClient
         from datetime import date
@@ -738,12 +740,7 @@ def _save_briefing_to_notion(notion_token: str, notion_db_id: str, group: str, b
                 properties={**base_props, "상태": {"status": {"name": "읽기 전"}}}
             )
         except Exception:
-            # 상태 속성 없을 경우 상태 제외하고 저장
-            notion.pages.create(
-                parent={"database_id": notion_db_id},
-                properties=base_props
-            )
-        print(f"✅ 브리핑 Notion 저장 완료: {title}")
+            notion.pages.create(parent={"database_id": notion_db_id}, properties=base_props)
         return True
     except Exception as e:
         print(f"❌ 브리핑 Notion 저장 실패: {e}")
@@ -756,7 +753,6 @@ def _save_briefing_to_notion(notion_token: str, notion_db_id: str, group: str, b
 def show_admin_page():
     ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
-    # ── 관리자 비밀번호 재확인 (환경변수) ─────────────────
     verified_at = st.session_state.get("admin_verified_at")
     is_verified = False
     if verified_at:
@@ -770,7 +766,6 @@ def show_admin_page():
         st.markdown('<div class="main-title">🛡️ 관리자 인증</div>', unsafe_allow_html=True)
         st.caption("관리자 페이지 접근을 위해 관리자 비밀번호를 입력해주세요.")
 
-        # 어드민 비번 브루트포스 방어
         fail_key = "admin_pw_fails"
         lock_key = "admin_pw_locked_until"
         from datetime import datetime as _dt
@@ -812,7 +807,6 @@ def show_admin_page():
 
     st.divider()
     users = get_all_users()
-
     total     = len(users)
     free      = sum(1 for u in users if u["role"] == "free")
     trial     = sum(1 for u in users if u["role"] == "trial")
@@ -844,15 +838,14 @@ def show_admin_page():
                 st.write(f"**가입일:** {_kst(user['created_at'])}")
                 st.write(f"**마지막 로그인:** {_kst(user['last_login'])}")
                 st.write(f"**Notion 연결:** {'✅' if user['notion_connected'] else '❌'}")
-                # 이번 주 수집 횟수
-                weekly = get_weekly_crawl_count(user["user_id"])
-                st.write(f"**이번 주 수동 수집:** {weekly}회")
+                weekly_crawl = get_weekly_crawl_count(user["user_id"])
+                weekly_brief = get_weekly_briefing_count(user["user_id"])
+                st.write(f"**이번 주 수동 수집:** {weekly_crawl}회")
+                st.write(f"**이번 주 브리핑:** {weekly_brief}회")
             with col2:
                 current_idx = role_options.index(user["role"]) if user["role"] in role_options else 0
                 new_role = st.selectbox(
-                    "권한 변경",
-                    options=role_options,
-                    index=current_idx,
+                    "권한 변경", options=role_options, index=current_idx,
                     format_func=lambda x: role_labels.get(x, x),
                     key=f"role_{user['user_id']}"
                 )
@@ -861,42 +854,75 @@ def show_admin_page():
                     st.toast(f"✅ {user['email']} → {role_labels[new_role]}")
                     st.rerun()
 
-                # 개별 수집 횟수 제한
+                # 수동 수집 개별 한도
                 cur_custom = user.get("custom_weekly_limit")
                 custom_input = st.number_input(
-                    "개별 주간 한도 (비워두면 권한 기본값)",
+                    "수동 수집 개별 한도 (0=기본값)",
                     min_value=0, max_value=500,
                     value=cur_custom if cur_custom is not None else 0,
                     key=f"custom_{user['user_id']}"
                 )
-                c_col1, c_col2 = st.columns(2)
-                with c_col1:
-                    if st.button("한도 저장", key=f"climit_{user['user_id']}"):
+                cc1, cc2 = st.columns(2)
+                with cc1:
+                    if st.button("수집 저장", key=f"climit_{user['user_id']}"):
                         update_user_custom_limit(user["user_id"], custom_input if custom_input > 0 else None)
-                        st.toast(f"✅ 개별 한도 저장!")
+                        st.toast("✅ 수집 한도 저장!")
                         st.rerun()
-                with c_col2:
-                    if st.button("기본값으로", key=f"creset_{user['user_id']}"):
+                with cc2:
+                    if st.button("수집 기본값", key=f"creset_{user['user_id']}"):
                         update_user_custom_limit(user["user_id"], None)
-                        st.toast("✅ 기본값으로 초기화!")
+                        st.toast("✅ 기본값 초기화!")
                         st.rerun()
 
-    # ── 제한 횟수 설정 ────────────────────────────────────
-    st.divider()
-    st.subheader("⚙️ 권한별 수동 수집 제한 설정")
-    cur_trial = int(get_admin_config("trial_weekly_limit") or 15)
-    cur_free  = int(get_admin_config("free_weekly_limit") or 30)
+                # 브리핑 개별 한도
+                cur_b_custom = user.get("custom_briefing_limit")
+                briefing_input = st.number_input(
+                    "브리핑 개별 한도 (0=기본값)",
+                    min_value=0, max_value=100,
+                    value=cur_b_custom if cur_b_custom is not None else 0,
+                    key=f"blimit_{user['user_id']}"
+                )
+                bc1, bc2 = st.columns(2)
+                with bc1:
+                    if st.button("브리핑 저장", key=f"bsave_{user['user_id']}"):
+                        update_user_custom_briefing_limit(user["user_id"], briefing_input if briefing_input > 0 else None)
+                        st.toast("✅ 브리핑 한도 저장!")
+                        st.rerun()
+                with bc2:
+                    if st.button("브리핑 기본값", key=f"breset_{user['user_id']}"):
+                        update_user_custom_briefing_limit(user["user_id"], None)
+                        st.toast("✅ 기본값 초기화!")
+                        st.rerun()
 
+    # ── 권한별 제한 설정 ──────────────────────────────────
+    st.divider()
+    st.subheader("⚙️ 권한별 제한 설정")
+
+    cur_trial  = int(get_admin_config("trial_weekly_limit") or 15)
+    cur_free   = int(get_admin_config("free_weekly_limit") or 30)
+    cur_trial_b = int(get_admin_config("trial_briefing_limit") or 5)
+    cur_free_b  = int(get_admin_config("free_briefing_limit") or 10)
+
+    st.markdown("**수동 수집 주간 한도**")
     s1, s2 = st.columns(2)
     with s1:
-        new_trial_limit = st.number_input("체험(trial) 주간 수집 한도", min_value=1, max_value=100, value=cur_trial)
+        new_trial_limit = st.number_input("체험(trial)", min_value=1, max_value=100, value=cur_trial, key="tl")
     with s2:
-        new_free_limit = st.number_input("무료(free) 주간 수집 한도", min_value=1, max_value=200, value=cur_free)
+        new_free_limit = st.number_input("무료(free)", min_value=1, max_value=200, value=cur_free, key="fl")
+
+    st.markdown("**브리핑 주간 한도**")
+    b1, b2 = st.columns(2)
+    with b1:
+        new_trial_b = st.number_input("체험(trial)", min_value=1, max_value=50, value=cur_trial_b, key="tb")
+    with b2:
+        new_free_b = st.number_input("무료(free)", min_value=1, max_value=100, value=cur_free_b, key="fb")
 
     if st.button("💾 제한 설정 저장", type="primary"):
         set_admin_config("trial_weekly_limit", str(new_trial_limit))
         set_admin_config("free_weekly_limit", str(new_free_limit))
-        st.toast("✅ 제한 횟수 저장 완료!")
+        set_admin_config("trial_briefing_limit", str(new_trial_b))
+        set_admin_config("free_briefing_limit", str(new_free_b))
+        st.toast("✅ 제한 설정 저장 완료!")
         st.rerun()
 
 
@@ -910,13 +936,11 @@ else:
     _row  = get_user_by_id(_uid)
     _role = _row.get("role", "trial") if _row else "trial"
 
-    # 차단된 유저 강제 로그아웃
     if _role == "blocked":
         st.error("❌ 이용이 제한된 계정입니다. 관리자에게 문의해주세요.")
         _do_logout()
         st.stop()
 
-    # 관리자면 어드민 페이지
     if _role == "admin":
         tab_main, tab_admin = st.tabs(["📰 메인", "🛡️ 관리자"])
         with tab_main:

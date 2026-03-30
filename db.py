@@ -64,7 +64,6 @@ def init_db():
                 updated_at      TIMESTAMP DEFAULT NOW()
             )
         """)
-        # 수동 수집 횟수 기록
         cur.execute("""
             CREATE TABLE IF NOT EXISTS manual_crawl_log (
                 id         SERIAL PRIMARY KEY,
@@ -72,7 +71,13 @@ def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
-        # 관리자 설정 (제한 횟수 등)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS briefing_log (
+                id         SERIAL PRIMARY KEY,
+                user_id    INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS admin_config (
                 key   TEXT PRIMARY KEY,
@@ -83,13 +88,17 @@ def init_db():
         # 마이그레이션
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'trial'")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_weekly_limit INTEGER DEFAULT NULL")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_briefing_limit INTEGER DEFAULT NULL")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_login_attempts_email ON login_attempts(email, attempted_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_crawl_log_user ON manual_crawl_log(user_id, created_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_briefing_log_user ON briefing_log(user_id, created_at)")
 
-        # 기본 설정값 삽입 (없을 때만)
+        # 기본 설정값
         cur.execute("INSERT INTO admin_config (key, value) VALUES ('trial_weekly_limit', '15') ON CONFLICT (key) DO NOTHING")
         cur.execute("INSERT INTO admin_config (key, value) VALUES ('free_weekly_limit', '30') ON CONFLICT (key) DO NOTHING")
+        cur.execute("INSERT INTO admin_config (key, value) VALUES ('trial_briefing_limit', '5') ON CONFLICT (key) DO NOTHING")
+        cur.execute("INSERT INTO admin_config (key, value) VALUES ('free_briefing_limit', '10') ON CONFLICT (key) DO NOTHING")
 
 
 # ─── 유저 ────────────────────────────────────────────────
@@ -138,12 +147,22 @@ def update_user_role(user_id: int, role: str):
         cur = conn.cursor()
         cur.execute("UPDATE users SET role = %s WHERE user_id = %s", (role, user_id))
 
+def update_user_custom_limit(user_id: int, limit):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET custom_weekly_limit = %s WHERE user_id = %s", (limit, user_id))
+
+def update_user_custom_briefing_limit(user_id: int, limit):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET custom_briefing_limit = %s WHERE user_id = %s", (limit, user_id))
+
 def get_all_users():
     with get_conn() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
             SELECT user_id, email, role, is_active, created_at, last_login,
-                   notion_db_id, custom_weekly_limit,
+                   notion_db_id, custom_weekly_limit, custom_briefing_limit,
                    CASE WHEN notion_token_enc IS NOT NULL THEN TRUE ELSE FALSE END AS notion_connected
             FROM users
             ORDER BY created_at DESC
@@ -151,14 +170,8 @@ def get_all_users():
         return cur.fetchall()
 
 
-def update_user_custom_limit(user_id: int, limit):
-    """limit=None 이면 기본값(권한별) 사용"""
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("UPDATE users SET custom_weekly_limit = %s WHERE user_id = %s", (limit, user_id))
-
 # ─── 세션 ────────────────────────────────────────────────
-def create_session(session_id: str, user_id: int, ip_address: str = None, hours: int = 24):
+def create_session(session_id: str, user_id: int, ip_address: str = None, hours: int = 1):
     from datetime import datetime, timedelta
     expires_at = datetime.now() + timedelta(hours=hours)
     with get_conn() as conn:
@@ -177,6 +190,17 @@ def get_session(session_id: str):
             (session_id,)
         )
         return cur.fetchone()
+
+def extend_session(session_id: str, hours: int = 1):
+    """세션 만료 시간 연장"""
+    from datetime import datetime, timedelta
+    new_expires = datetime.now() + timedelta(hours=hours)
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE sessions SET expires_at = %s WHERE session_id = %s",
+            (new_expires, session_id)
+        )
 
 def delete_session(session_id: str):
     with get_conn() as conn:
@@ -235,11 +259,27 @@ def record_manual_crawl(user_id: int):
         cur.execute("INSERT INTO manual_crawl_log (user_id) VALUES (%s)", (user_id,))
 
 def get_weekly_crawl_count(user_id: int) -> int:
-    """이번 주 월요일 00:00 KST 이후 수집 횟수"""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("""
             SELECT COUNT(*) FROM manual_crawl_log
+            WHERE user_id = %s
+              AND created_at >= DATE_TRUNC('week', NOW() AT TIME ZONE 'Asia/Seoul') AT TIME ZONE 'Asia/Seoul'
+        """, (user_id,))
+        return cur.fetchone()[0]
+
+
+# ─── 브리핑 횟수 ─────────────────────────────────────────
+def record_briefing(user_id: int):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO briefing_log (user_id) VALUES (%s)", (user_id,))
+
+def get_weekly_briefing_count(user_id: int) -> int:
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COUNT(*) FROM briefing_log
             WHERE user_id = %s
               AND created_at >= DATE_TRUNC('week', NOW() AT TIME ZONE 'Asia/Seoul') AT TIME ZONE 'Asia/Seoul'
         """, (user_id,))
