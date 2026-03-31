@@ -285,10 +285,15 @@ def show_notion_setup_page(user_id: int):
             > 💡 뷰 설정이 완료되면 아래 버튼을 눌러 시작하세요!
             """)
 
-            if st.button("🚀 시작하기", type="primary", use_container_width=True):
-                for k in ["notion_setup_done", "notion_setup_added", "notion_setup_skipped"]:
-                    st.session_state.pop(k, None)
-                st.rerun()
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("🚀 시작하기", type="primary", use_container_width=True):
+                    for k in ["notion_setup_done", "notion_setup_added", "notion_setup_skipped"]:
+                        st.session_state.pop(k, None)
+                    st.rerun()
+            with c2:
+                if st.button("📋 가이드 다시 보기", use_container_width=True):
+                    pass  # 이미 가이드 표시 중
 
         st.divider()
         st.caption("💡 DB URL 예시: `https://notion.so/workspace/abc123...?v=xyz` → URL 그대로 붙여넣기")
@@ -423,7 +428,7 @@ def show_main_app():
             if st.button("⚙️ Notion 재설정", use_container_width=True):
                 st.session_state["confirm_notion_reset"] = True
         with b2:
-            if st.button("🔧 DB 속성 설정", use_container_width=True, help="Notion DB에 필수 속성을 자동으로 추가합니다"):
+            if st.button("🔧 DB 속성 설정", use_container_width=True, help="Notion DB에 필수 속성 추가 + 뷰 설정 가이드"):
                 st.session_state["show_db_setup"] = True
         
         if st.session_state.get("show_db_setup"):
@@ -434,9 +439,15 @@ def show_main_app():
                 st.error(f"❌ 설정 실패: {errors[0]}")
             else:
                 if added:
-                    st.toast(f"✅ 속성 추가 완료: {', '.join(added)}")
+                    st.session_state["notion_setup_done"] = True
+                    st.session_state["notion_setup_added"] = added
+                    st.session_state["notion_setup_skipped"] = skipped
+                    st.rerun()
                 else:
-                    st.toast("✅ 모든 속성이 이미 설정되어 있습니다!")
+                    st.session_state["notion_setup_done"] = True
+                    st.session_state["notion_setup_added"] = []
+                    st.session_state["notion_setup_skipped"] = skipped
+                    st.rerun()
 
         if st.button("로그아웃", use_container_width=True):
             _do_logout()
@@ -564,7 +575,17 @@ def show_main_app():
                                         "custom_schedules": custom_schedules})
                                     st.rerun()
 
-                    if len(custom_schedules) < 5:
+                    # 지정 시간 추가 한도 체크
+                    _sch_limit = _get_limit(role, user_row, "trial_custom_schedule_limit", "free_custom_schedule_limit", "custom_schedule_limit")
+                    _sch_used  = len(custom_schedules)
+                    _sch_remain = max(0, _sch_limit - _sch_used)
+
+                    if role != "admin" and _sch_remain <= 0 and _sch_limit > 0:
+                        st.warning(f"⚠️ 지정 시간 추가 한도({_sch_limit}개)에 도달했습니다. 관리자에게 문의하세요.")
+                    elif role != "admin" and _sch_limit == 0:
+                        st.info("⚠️ 체험 계정은 지정 시간 추가가 불가합니다.")
+
+                    if len(custom_schedules) < 5 and (role == "admin" or (_sch_limit > 0 and _sch_remain > 0)):
                         with st.form("add_schedule_form"):
                             nc1, nc2, nc3, nc4 = st.columns([2, 2, 2, 1])
                             with nc1:
@@ -829,6 +850,28 @@ def show_main_app():
         with s3:
             if st.button("전체 해제", use_container_width=True):
                 st.warning("최소 1개는 선택되어야 합니다.")
+
+    with st.expander("📋 Notion 뷰 설정 가이드"):
+        st.markdown("""
+        **뷰 만드는 방법:** DB 상단 `표 ∨` → `새 보기` → `표` 선택 → 이름 입력
+
+        #### 1️⃣ 자동수집 뷰
+        - 이름: `자동 수집`
+        - **필터:** `유형` = `기사` + `시간대` **포함하지 않음** `수동`
+        - **그룹화:** 필터 아이콘(≡) → 그룹화 → 기준: `시간대` → 정렬: `알파벳 역순` → 빈 그룹 숨기기 ON
+
+        #### 2️⃣ 수동수집 뷰
+        - 이름: `수동 수집`
+        - **필터:** `유형` = `기사` + `시간대` **포함** `수동`
+        - **그룹화:** 기준: `시간대` → 정렬: `알파벳 역순` → 빈 그룹 숨기기 ON
+
+        #### 3️⃣ 브리핑 뷰
+        - 이름: `브리핑`
+        - **필터:** `유형` = `브리핑`
+
+        #### 4️⃣ 전체 뷰
+        - 이름: `전체` / 필터 없음 / 정렬: `날짜` 내림차순
+        """)
 
     st.divider()
     with st.expander("📖 사용 방법"):
@@ -1248,6 +1291,27 @@ def show_admin_page():
 
                 st.divider()
                 cur_b = user.get("custom_briefing_limit")
+                st.divider()
+                cur_sch = user.get("custom_schedule_limit")
+                st.caption("지정 시간 추가 한도 (개수)")
+                sch_input = st.number_input("지정 시간 한도", min_value=0, max_value=10,
+                                            value=cur_sch if cur_sch is not None else 0, key=f"sch_{uid}",
+                                            label_visibility="collapsed")
+                sc1, sc2 = st.columns(2)
+                with sc1:
+                    if st.button("저장", key=f"schs_{uid}"):
+                        from db import update_user_custom_schedule_limit
+                        update_user_custom_schedule_limit(uid, sch_input if sch_input > 0 else None)
+                        st.toast("✅ 지정 시간 한도 저장!")
+                        st.rerun()
+                with sc2:
+                    if st.button("기본값", key=f"schr_{uid}"):
+                        from db import update_user_custom_schedule_limit
+                        update_user_custom_schedule_limit(uid, None)
+                        st.toast("✅ 초기화!")
+                        st.rerun()
+
+                st.divider()
                 st.caption("브리핑 한도")
                 b_input = st.number_input("브리핑 (주간)", min_value=0, max_value=100,
                                           value=cur_b if cur_b is not None else 0, key=f"b_{uid}",
@@ -1297,9 +1361,17 @@ def show_admin_page():
     cur_trial_bd = int(get_admin_config("trial_briefing_det_limit") or 3)
     cur_free_bd  = int(get_admin_config("free_briefing_det_limit")  or 5)
 
-    cur_max_hours = int(get_admin_config("max_crawl_hours") or 12)
+    cur_max_hours    = int(get_admin_config("max_crawl_hours") or 12)
+    cur_trial_sch    = int(get_admin_config("trial_custom_schedule_limit") or 0)
+    cur_free_sch     = int(get_admin_config("free_custom_schedule_limit") or 2)
+
     st.markdown("**지정 시간 자동 수집 최대 범위 (시간)**")
     new_max_hours = st.number_input("최대 수집 범위 (시간)", min_value=1, max_value=48, value=cur_max_hours, key="nmh")
+
+    st.markdown("**지정 시간 추가 한도 (개수)**")
+    sch1, sch2 = st.columns(2)
+    with sch1: new_trial_sch = st.number_input("체험 (0=불가)", min_value=0, max_value=10, value=cur_trial_sch, key="ntsch")
+    with sch2: new_free_sch  = st.number_input("무료", min_value=0, max_value=10, value=cur_free_sch,  key="nfsch")
 
     st.markdown("**기본 수동 수집 주간 한도**")
     s1, s2 = st.columns(2)
@@ -1327,7 +1399,9 @@ def show_admin_page():
     with bd2: new_fbd = st.number_input("무료", min_value=1, max_value=100, value=cur_free_bd,  key="nfbd")
 
     if st.button("💾 제한 설정 저장", type="primary"):
-        set_admin_config("max_crawl_hours",          str(new_max_hours))
+        set_admin_config("max_crawl_hours",               str(new_max_hours))
+        set_admin_config("trial_custom_schedule_limit",   str(new_trial_sch))
+        set_admin_config("free_custom_schedule_limit",    str(new_free_sch))
         set_admin_config("trial_weekly_limit",       str(new_tm))
         set_admin_config("free_weekly_limit",        str(new_fm))
         set_admin_config("trial_detail_manual_limit", str(new_tdm))

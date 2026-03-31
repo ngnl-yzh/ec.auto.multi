@@ -103,6 +103,7 @@ def init_db():
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_detail_limit INTEGER DEFAULT NULL")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_detail_manual_limit INTEGER DEFAULT NULL")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_detail_auto_limit INTEGER DEFAULT NULL")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_schedule_limit INTEGER DEFAULT NULL")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS manual_crawl_bonus INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS briefing_bonus INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS detail_bonus INTEGER DEFAULT 0")
@@ -146,6 +147,8 @@ def init_db():
             ('trial_detail_auto_limit',    '10'),
             ('free_detail_auto_limit',     '20'),
             ('max_crawl_hours',              '12'),
+            ('trial_custom_schedule_limit',  '0'),
+            ('free_custom_schedule_limit',   '2'),
         ]
         for k, v in defaults:
             cur.execute("INSERT INTO admin_config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING", (k, v))
@@ -222,6 +225,11 @@ def update_user_custom_detail_auto_limit(user_id: int, limit):
         cur = conn.cursor()
         cur.execute("UPDATE users SET custom_detail_auto_limit = %s WHERE user_id = %s", (limit, user_id))
 
+def update_user_custom_schedule_limit(user_id: int, limit):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET custom_schedule_limit = %s WHERE user_id = %s", (limit, user_id))
+
 def add_user_bonus(user_id: int, bonus_type: str, amount: int):
     """bonus_type: 'manual_crawl_bonus' | 'briefing_bonus' | 'manual_detail_bonus' | 'auto_detail_bonus'"""
     allowed = {'manual_crawl_bonus', 'briefing_bonus', 'manual_detail_bonus', 'auto_detail_bonus'}
@@ -249,7 +257,7 @@ def get_all_users():
             SELECT user_id, email, role, is_active, created_at, last_login,
                    notion_db_id,
                    custom_weekly_limit, custom_briefing_limit, custom_detail_limit,
-                   custom_detail_manual_limit, custom_detail_auto_limit,
+                   custom_detail_manual_limit, custom_detail_auto_limit, custom_schedule_limit,
                    COALESCE(manual_crawl_bonus, 0)   AS manual_crawl_bonus,
                    COALESCE(briefing_bonus, 0)       AS briefing_bonus,
                    COALESCE(manual_detail_bonus, 0)  AS manual_detail_bonus,
