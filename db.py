@@ -120,6 +120,7 @@ def init_db():
         cur.execute("""ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS custom_schedules JSONB DEFAULT '[]'""")
         # briefing_log에 mode 컬럼 추가
         cur.execute("ALTER TABLE briefing_log ADD COLUMN IF NOT EXISTS briefing_mode TEXT DEFAULT 'standard'")
+        cur.execute("ALTER TABLE detail_crawl_log ADD COLUMN IF NOT EXISTS crawl_type TEXT DEFAULT 'manual'")
 
         # 인덱스
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)")
@@ -136,8 +137,10 @@ def init_db():
             ('free_briefing_std_limit',   '10'),
             ('trial_briefing_det_limit',  '3'),
             ('free_briefing_det_limit',   '5'),
-            ('trial_detail_limit',        '10'),
-            ('free_detail_limit',         '20'),
+            ('trial_detail_manual_limit',  '10'),
+            ('free_detail_manual_limit',   '20'),
+            ('trial_detail_auto_limit',    '10'),
+            ('free_detail_auto_limit',     '20'),
         ]
         for k, v in defaults:
             cur.execute("INSERT INTO admin_config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING", (k, v))
@@ -332,20 +335,39 @@ def get_weekly_crawl_count(user_id: int) -> int:
 
 
 # ─── 상세 요약 횟수 ──────────────────────────────────────
-def record_detail_crawl(user_id: int):
+def record_detail_crawl(user_id: int, crawl_type: str = 'manual'):
+    """crawl_type: 'manual' | 'auto'"""
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("INSERT INTO detail_crawl_log (user_id) VALUES (%s)", (user_id,))
+        cur.execute("INSERT INTO detail_crawl_log (user_id, crawl_type) VALUES (%s, %s)", (user_id, crawl_type))
 
-def get_weekly_detail_count(user_id: int) -> int:
+def get_weekly_detail_count(user_id: int, crawl_type: str = None) -> int:
+    """crawl_type=None이면 전체, 'manual'/'auto'이면 해당 타입만"""
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("""
-            SELECT COUNT(*) FROM detail_crawl_log
-            WHERE user_id = %s
-              AND created_at >= DATE_TRUNC('week', NOW() AT TIME ZONE 'Asia/Seoul') AT TIME ZONE 'Asia/Seoul'
-        """, (user_id,))
+        if crawl_type:
+            cur.execute("""
+                SELECT COUNT(*) FROM detail_crawl_log
+                WHERE user_id = %s AND crawl_type = %s
+                  AND created_at >= DATE_TRUNC('week', NOW() AT TIME ZONE 'Asia/Seoul') AT TIME ZONE 'Asia/Seoul'
+            """, (user_id, crawl_type))
+        else:
+            cur.execute("""
+                SELECT COUNT(*) FROM detail_crawl_log
+                WHERE user_id = %s
+                  AND created_at >= DATE_TRUNC('week', NOW() AT TIME ZONE 'Asia/Seoul') AT TIME ZONE 'Asia/Seoul'
+            """, (user_id,))
         return cur.fetchone()[0]
+
+# 3. 계정 잠금 해제
+def unlock_account(email: str):
+    """로그인 실패 기록 삭제 → 잠금 해제"""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM login_attempts WHERE email = %s AND success = FALSE",
+            (email.lower().strip(),)
+        )
 
 
 # ─── 브리핑 횟수 ─────────────────────────────────────────

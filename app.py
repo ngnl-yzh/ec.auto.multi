@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 
 from db import (
     get_user_by_id, get_settings, save_settings,
+    unlock_account,
     update_notion_credentials, get_session,
     get_all_users, update_user_role,
     record_manual_crawl, get_weekly_crawl_count,
@@ -500,6 +501,12 @@ def show_main_app():
                         "summary_mode_auto": summary_mode_auto})
                     st.toast("✅ 기본 자동 수집 활성화!" if auto_enabled_default else "⏸ 기본 자동 수집 비활성화")
 
+                # 상태 표시
+                if auto_enabled_default:
+                    st.success("🟢 기본 자동 수집 활성화 중 (오전 7시 · 오후 8시)")
+                else:
+                    st.warning("🔴 기본 자동 수집 비활성화")
+
                 # 커스텀 스케줄 ON/OFF
                 new_auto_custom = st.toggle(
                     "⏰ 지정 시간 자동 수집",
@@ -515,6 +522,12 @@ def show_main_app():
                         "custom_schedules": custom_schedules,
                         "summary_mode_auto": summary_mode_auto})
                     st.toast("✅ 지정 시간 자동 수집 활성화!" if auto_enabled_custom else "⏸ 지정 시간 자동 수집 비활성화")
+
+                # 상태 표시
+                if auto_enabled_custom:
+                    st.success("🟢 지정 시간 자동 수집 활성화 중")
+                else:
+                    st.warning("🔴 지정 시간 자동 수집 비활성화")
 
                 # 커스텀 스케줄 관리
                 with st.expander("⏰ 지정 시간 추가/관리"):
@@ -1099,6 +1112,15 @@ def show_admin_page():
                 st.write(f"**가입일:** {_kst(user['created_at'])}")
                 st.write(f"**마지막 로그인:** {_kst(user['last_login'])}")
                 st.write(f"**Notion 연결:** {'✅' if user['notion_connected'] else '❌'}")
+                # 잠금 여부 확인
+                from db import is_account_locked
+                is_locked = is_account_locked(user["email"])
+                if is_locked:
+                    st.error("🔒 로그인 잠금 상태")
+                    if st.button("🔓 잠금 해제", key=f"unlock_{uid}", type="primary"):
+                        unlock_account(user["email"])
+                        st.toast(f"✅ {user['email']} 잠금 해제!")
+                        st.rerun()
                 w_crawl = get_weekly_crawl_count(uid)
                 w_detail = get_weekly_detail_count(uid)
                 w_brief_std = get_weekly_briefing_count(uid, mode='standard')
@@ -1193,8 +1215,10 @@ def show_admin_page():
 
     cur_trial_m  = int(get_admin_config("trial_weekly_limit")       or 15)
     cur_free_m   = int(get_admin_config("free_weekly_limit")        or 30)
-    cur_trial_d  = int(get_admin_config("trial_detail_limit")       or 10)
-    cur_free_d   = int(get_admin_config("free_detail_limit")        or 20)
+    cur_trial_dm = int(get_admin_config("trial_detail_manual_limit") or 10)
+    cur_free_dm  = int(get_admin_config("free_detail_manual_limit")  or 20)
+    cur_trial_da = int(get_admin_config("trial_detail_auto_limit")   or 10)
+    cur_free_da  = int(get_admin_config("free_detail_auto_limit")    or 20)
     cur_trial_bs = int(get_admin_config("trial_briefing_std_limit") or 5)
     cur_free_bs  = int(get_admin_config("free_briefing_std_limit")  or 10)
     cur_trial_bd = int(get_admin_config("trial_briefing_det_limit") or 3)
@@ -1205,10 +1229,15 @@ def show_admin_page():
     with s1: new_tm = st.number_input("체험", min_value=1, max_value=100,  value=cur_trial_m,  key="ntm")
     with s2: new_fm = st.number_input("무료", min_value=1, max_value=200,  value=cur_free_m,   key="nfm")
 
-    st.markdown("**상세 요약 주간 한도**")
+    st.markdown("**수동 상세 요약 주간 한도**")
     d1, d2 = st.columns(2)
-    with d1: new_td = st.number_input("체험", min_value=1, max_value=100,  value=cur_trial_d,  key="ntd")
-    with d2: new_fd = st.number_input("무료", min_value=1, max_value=200,  value=cur_free_d,   key="nfd")
+    with d1: new_tdm = st.number_input("체험", min_value=1, max_value=100, value=cur_trial_dm, key="ntdm")
+    with d2: new_fdm = st.number_input("무료", min_value=1, max_value=200, value=cur_free_dm,  key="nfdm")
+
+    st.markdown("**자동 상세 요약 주간 한도**")
+    da1, da2 = st.columns(2)
+    with da1: new_tda = st.number_input("체험", min_value=1, max_value=100, value=cur_trial_da, key="ntda")
+    with da2: new_fda = st.number_input("무료", min_value=1, max_value=200, value=cur_free_da,  key="nfda")
 
     st.markdown("**브리핑(기본) 주간 한도**")
     b1, b2 = st.columns(2)
@@ -1223,8 +1252,10 @@ def show_admin_page():
     if st.button("💾 제한 설정 저장", type="primary"):
         set_admin_config("trial_weekly_limit",       str(new_tm))
         set_admin_config("free_weekly_limit",        str(new_fm))
-        set_admin_config("trial_detail_limit",       str(new_td))
-        set_admin_config("free_detail_limit",        str(new_fd))
+        set_admin_config("trial_detail_manual_limit", str(new_tdm))
+        set_admin_config("free_detail_manual_limit",  str(new_fdm))
+        set_admin_config("trial_detail_auto_limit",   str(new_tda))
+        set_admin_config("free_detail_auto_limit",    str(new_fda))
         set_admin_config("trial_briefing_std_limit", str(new_tbs))
         set_admin_config("free_briefing_std_limit",  str(new_fbs))
         set_admin_config("trial_briefing_det_limit", str(new_tbd))
