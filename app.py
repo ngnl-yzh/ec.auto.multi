@@ -696,8 +696,7 @@ def show_main_app():
                     else:
                         st.markdown(
                             f'<div class="limit-info">'
-                            f'🔍 수동 상세 수집 — 수집 <b>{_m_used}/{_m_total}회</b> · 상세 요약 <b>{_manual_det_used}/{_manual_det_total}회</b> 사용<br>'
-                            f'&nbsp;&nbsp;&nbsp;남은 수집: <b>{_m_remain}회</b> · 남은 상세 요약: <b>{_manual_det_remain}회</b>'
+                            f'🔍 남은 수동 상세 수집: <b>{_manual_det_remain}회</b>'
                             f'</div>',
                             unsafe_allow_html=True
                         )
