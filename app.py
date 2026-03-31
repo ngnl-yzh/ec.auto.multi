@@ -601,7 +601,7 @@ def show_main_app():
                         if _sch_remain <= 0:
                             st.warning(f"⚠️ 지정 시간 추가 한도({_sch_limit}개)에 도달했습니다.")
                         elif _chg_remain <= 0:
-                            st.warning(f"⚠️ 최근 28일 내 추가 횟수({_chg_total}회)를 모두 사용했습니다.")
+                            st.warning(f"⚠️ 수정 가능 횟수({_chg_total}회)를 모두 사용했습니다.")
 
                     if len(custom_schedules) < 5 and _can_add_sch:
                         with st.form("add_schedule_form"):
@@ -740,6 +740,19 @@ def show_main_app():
                 elif new_mode_manual == "detailed" and _manual_det_remain <= 0:
                     _btn_disabled = True
 
+            # 수정1: 모드별 사용 횟수 표시
+            if role != "admin":
+                if new_mode_manual == "standard":
+                    st.markdown(
+                        f'<div class="limit-info">📄 기본 수동 수집 — <b>{_m_used}/{_m_total}회</b> 사용 · 남은 횟수: <b>{_m_remain}회</b></div>',
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.markdown(
+                        f'<div class="limit-info">🔍 상세 수동 수집 — <b>{_manual_det_used}/{_manual_det_total}회</b> 사용 · 남은 횟수: <b>{_manual_det_remain}회</b></div>',
+                        unsafe_allow_html=True
+                    )
+
             if st.button("📥 수동 수집 시작", use_container_width=True, type="primary",
                          disabled=_btn_disabled):
                 if not notion_token or not notion_db_id:
@@ -872,24 +885,46 @@ def show_main_app():
 
     with st.expander("📋 Notion 뷰 설정 가이드"):
         st.markdown("""
-        **뷰 만드는 방법:** DB 상단 `표 ∨` → `새 보기` → `표` 선택 → 이름 입력
+        ### 📌 뷰(탭) 만드는 방법
+        > Notion DB 상단에서 **표 ∨** 버튼 클릭 → **새 보기** → **표** 선택 → 이름 입력
+        """)
 
-        #### 1️⃣ 자동수집 뷰
-        - 이름: `자동 수집`
-        - **필터:** `유형` = `기사` + `시간대` **포함하지 않음** `수동`
-        - **그룹화:** 필터 아이콘(≡) → 그룹화 → 기준: `시간대` → 정렬: `알파벳 역순` → 빈 그룹 숨기기 ON
+        st.markdown("---")
+        st.markdown("### 1️⃣ 자동수집 뷰")
+        st.markdown("""
+        - **이름:** `자동 수집` 으로 입력
+        - **필터 설정:**
+          - ➕ 필터 추가 → `유형` 선택 → **기사** 선택
+          - ➕ 필터 추가 → `시간대` 선택 → **포함하지 않음** 선택 → `수동` 입력
+        - **그룹화 설정:**
+          - 우측 상단 필터 아이콘(≡) 클릭 → **그룹화** 클릭
+          - 그룹화 기준: `시간대` 선택
+          - 정렬: **알파벳 역순** 선택
+          - 빈 그룹 숨기기: **켜기**
+        """)
 
-        #### 2️⃣ 수동수집 뷰
-        - 이름: `수동 수집`
-        - **필터:** `유형` = `기사` + `시간대` **포함** `수동`
-        - **그룹화:** 기준: `시간대` → 정렬: `알파벳 역순` → 빈 그룹 숨기기 ON
+        st.markdown("### 2️⃣ 수동수집 뷰")
+        st.markdown("""
+        - **이름:** `수동 수집` 으로 입력
+        - **필터 설정:**
+          - ➕ 필터 추가 → `유형` → **기사**
+          - ➕ 필터 추가 → `시간대` → **포함** → `수동` 입력
+        - **그룹화:** 자동수집 뷰와 동일하게 설정
+        """)
 
-        #### 3️⃣ 브리핑 뷰
-        - 이름: `브리핑`
-        - **필터:** `유형` = `브리핑`
+        st.markdown("### 3️⃣ 브리핑 뷰")
+        st.markdown("""
+        - **이름:** `브리핑` 으로 입력
+        - **필터 설정:**
+          - ➕ 필터 추가 → `유형` → **브리핑**
+        - 그룹화 없음
+        """)
 
-        #### 4️⃣ 전체 뷰
-        - 이름: `전체` / 필터 없음 / 정렬: `날짜` 내림차순
+        st.markdown("### 4️⃣ 전체 뷰")
+        st.markdown("""
+        - **이름:** `전체` 로 입력
+        - 필터 없음
+        - 정렬: `날짜` 내림차순
         """)
 
     st.divider()
@@ -1378,7 +1413,7 @@ def show_admin_page():
                         "수동 상세 요약":   "manual_detail_bonus",
                         "자동 상세 요약":   "auto_detail_bonus",
                         "브리핑":           "briefing_bonus",
-                        "시간대 추가 횟수": "schedule_change_bonus",
+                        "수정 가능 횟수": "schedule_change_bonus",
                     }
                     add_user_bonus(uid, type_map[bonus_type], bonus_amt)
                     st.toast(f"✅ {user['email']} {bonus_type} +{bonus_amt}회 추가!")
@@ -1414,7 +1449,7 @@ def show_admin_page():
 
     cur_trial_chg = int(get_admin_config("trial_schedule_change_limit") or 0)
     cur_free_chg  = int(get_admin_config("free_schedule_change_limit")  or 4)
-    st.markdown("**지정 시간 추가 횟수 한도 (28일 누적, 재추가 포함)**")
+    st.markdown("**지정 시간 수정 가능 횟수 한도 (28일 누적)**")
     st.info("⚠️ 여기서 변경한 한도는 **다음 주 월요일부터** 적용됩니다. 즉시 추가가 필요하면 개별 계정의 보너스 추가를 사용하세요.")
     chg1, chg2 = st.columns(2)
     with chg1: new_trial_chg = st.number_input("체험 (0=불가)", min_value=0, max_value=50, value=cur_trial_chg, key="ntchg")
@@ -1461,7 +1496,7 @@ def show_admin_page():
             "수동 상세 요약":   "manual_detail_bonus",
             "자동 상세 요약":   "auto_detail_bonus",
             "브리핑":           "briefing_bonus",
-            "시간대 추가 횟수": "schedule_change_bonus",
+            "수정 가능 횟수": "schedule_change_bonus",
         }
         all_u = get_all_users()
         for u in all_u:

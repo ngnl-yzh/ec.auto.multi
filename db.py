@@ -120,8 +120,6 @@ def init_db():
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_schedule_limit INTEGER DEFAULT NULL")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_schedule_change_limit INTEGER DEFAULT NULL")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS schedule_change_bonus INTEGER DEFAULT 0")
-        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_schedule_change_limit INTEGER DEFAULT NULL")
-        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS schedule_change_bonus INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS manual_crawl_bonus INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS briefing_bonus INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS detail_bonus INTEGER DEFAULT 0")
@@ -276,10 +274,6 @@ def get_schedule_change_count(user_id: int, days: int = 28) -> int:
         """, (user_id, days))
         return cur.fetchone()[0]
 
-def update_user_custom_schedule_change_limit(user_id: int, limit):
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("UPDATE users SET custom_schedule_change_limit = %s WHERE user_id = %s", (limit, user_id))
 
 def record_schedule_change(user_id: int):
     """지정 시간 추가 행위 기록"""
@@ -325,7 +319,8 @@ def get_all_users():
             SELECT user_id, email, role, is_active, created_at, last_login,
                    notion_db_id,
                    custom_weekly_limit, custom_briefing_limit, custom_detail_limit,
-                   custom_detail_manual_limit, custom_detail_auto_limit, custom_schedule_limit, custom_schedule_change_limit, COALESCE(schedule_change_bonus,0) AS schedule_change_bonus, custom_schedule_change_limit, COALESCE(schedule_change_bonus,0) AS schedule_change_bonus,
+                   custom_detail_manual_limit, custom_detail_auto_limit, custom_schedule_limit,
+                   custom_schedule_change_limit, COALESCE(schedule_change_bonus,0) AS schedule_change_bonus,
                    COALESCE(manual_crawl_bonus, 0)   AS manual_crawl_bonus,
                    COALESCE(briefing_bonus, 0)       AS briefing_bonus,
                    COALESCE(manual_detail_bonus, 0)  AS manual_detail_bonus,
