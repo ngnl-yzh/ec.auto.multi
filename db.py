@@ -90,9 +90,23 @@ def init_db():
             )
         """)
         cur.execute("""
+            CREATE TABLE IF NOT EXISTS schedule_change_log (
+                id         SERIAL PRIMARY KEY,
+                user_id    INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS admin_config (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS schedule_change_log (
+                id         SERIAL PRIMARY KEY,
+                user_id    INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                created_at TIMESTAMP DEFAULT NOW()
             )
         """)
 
@@ -104,6 +118,10 @@ def init_db():
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_detail_manual_limit INTEGER DEFAULT NULL")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_detail_auto_limit INTEGER DEFAULT NULL")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_schedule_limit INTEGER DEFAULT NULL")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_schedule_change_limit INTEGER DEFAULT NULL")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS schedule_change_bonus INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_schedule_change_limit INTEGER DEFAULT NULL")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS schedule_change_bonus INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS manual_crawl_bonus INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS briefing_bonus INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS detail_bonus INTEGER DEFAULT 0")
@@ -133,6 +151,8 @@ def init_db():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_crawl_log_user ON manual_crawl_log(user_id, created_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_detail_log_user ON detail_crawl_log(user_id, created_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_briefing_log_user ON briefing_log(user_id, created_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_schedule_change_user ON schedule_change_log(user_id, created_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_schedule_change_user ON schedule_change_log(user_id, created_at)")
 
         # 기본 설정값
         defaults = [
@@ -148,7 +168,11 @@ def init_db():
             ('free_detail_auto_limit',     '20'),
             ('max_crawl_hours',              '12'),
             ('trial_custom_schedule_limit',  '0'),
+            ('trial_schedule_change_limit',   '0'),
+            ('free_schedule_change_limit',    '4'),
             ('free_custom_schedule_limit',   '2'),
+            ('trial_schedule_change_limit',  '0'),
+            ('free_schedule_change_limit',   '4'),
         ]
         for k, v in defaults:
             cur.execute("INSERT INTO admin_config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING", (k, v))
@@ -230,6 +254,50 @@ def update_user_custom_schedule_limit(user_id: int, limit):
         cur = conn.cursor()
         cur.execute("UPDATE users SET custom_schedule_limit = %s WHERE user_id = %s", (limit, user_id))
 
+def update_user_custom_schedule_change_limit(user_id: int, limit):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET custom_schedule_change_limit = %s WHERE user_id = %s", (limit, user_id))
+
+def record_schedule_change(user_id: int):
+    """커스텀 스케줄 추가 시 기록"""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO schedule_change_log (user_id) VALUES (%s)", (user_id,))
+
+def get_schedule_change_count(user_id: int, days: int = 28) -> int:
+    """최근 N일 내 스케줄 추가 횟수"""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COUNT(*) FROM schedule_change_log
+            WHERE user_id = %s
+              AND created_at > NOW() - INTERVAL '1 day' * %s
+        """, (user_id, days))
+        return cur.fetchone()[0]
+
+def update_user_custom_schedule_change_limit(user_id: int, limit):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET custom_schedule_change_limit = %s WHERE user_id = %s", (limit, user_id))
+
+def record_schedule_change(user_id: int):
+    """지정 시간 추가 행위 기록"""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO schedule_change_log (user_id) VALUES (%s)", (user_id,))
+
+def get_recent_schedule_change_count(user_id: int, days: int = 28) -> int:
+    """최근 N일 내 지정 시간 추가 횟수"""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COUNT(*) FROM schedule_change_log
+            WHERE user_id = %s
+              AND created_at > NOW() - INTERVAL '1 day' * %s
+        """, (user_id, days))
+        return cur.fetchone()[0]
+
 def add_user_bonus(user_id: int, bonus_type: str, amount: int):
     """bonus_type: 'manual_crawl_bonus' | 'briefing_bonus' | 'manual_detail_bonus' | 'auto_detail_bonus'"""
     allowed = {'manual_crawl_bonus', 'briefing_bonus', 'manual_detail_bonus', 'auto_detail_bonus'}
@@ -257,7 +325,7 @@ def get_all_users():
             SELECT user_id, email, role, is_active, created_at, last_login,
                    notion_db_id,
                    custom_weekly_limit, custom_briefing_limit, custom_detail_limit,
-                   custom_detail_manual_limit, custom_detail_auto_limit, custom_schedule_limit,
+                   custom_detail_manual_limit, custom_detail_auto_limit, custom_schedule_limit, custom_schedule_change_limit, COALESCE(schedule_change_bonus,0) AS schedule_change_bonus, custom_schedule_change_limit, COALESCE(schedule_change_bonus,0) AS schedule_change_bonus,
                    COALESCE(manual_crawl_bonus, 0)   AS manual_crawl_bonus,
                    COALESCE(briefing_bonus, 0)       AS briefing_bonus,
                    COALESCE(manual_detail_bonus, 0)  AS manual_detail_bonus,

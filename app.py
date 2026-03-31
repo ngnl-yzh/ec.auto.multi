@@ -5,6 +5,9 @@ from datetime import datetime, timedelta
 from db import (
     get_user_by_id, get_settings, save_settings,
     unlock_account,
+    record_schedule_change, get_schedule_change_count,
+    update_user_custom_schedule_change_limit,
+    record_schedule_change, get_recent_schedule_change_count,
     update_notion_credentials, get_session,
     get_all_users, update_user_role,
     record_manual_crawl, get_weekly_crawl_count,
@@ -578,18 +581,27 @@ def show_main_app():
                                         "custom_schedules": custom_schedules})
                                     st.rerun()
 
-                    # 지정 시간 추가 한도 체크
+                    # 지정 시간 추가 한도 (개수)
                     _sch_limit  = _get_limit(role, user_row, "trial_custom_schedule_limit", "free_custom_schedule_limit", "custom_schedule_limit")
                     _sch_used   = len(custom_schedules)
                     _sch_remain = max(0, _sch_limit - _sch_used)
-                    _can_add_sch = (role == "admin") or (_sch_limit > 0 and _sch_remain > 0)
+
+                    # 28일 내 변경 횟수 제한 (free만)
+                    _chg_limit  = _get_limit(role, user_row, "trial_schedule_change_limit", "free_schedule_change_limit", "custom_schedule_change_limit")
+                    _chg_bonus  = (user_row.get("schedule_change_bonus") or 0) if user_row else 0
+                    _chg_total  = _chg_limit + _chg_bonus
+                    _chg_used   = get_recent_schedule_change_count(user_id, days=28) if role == "free" else 0
+                    _chg_remain = max(0, _chg_total - _chg_used)
+                    _can_add_sch = (role == "admin") or (_sch_limit > 0 and _sch_remain > 0 and (role != "free" or _chg_remain > 0))
 
                     if role == "trial":
-                        st.error("🔒 체험 계정은 지정 시간 추가가 불가능합니다. 무료 플랜으로 업그레이드하세요.")
-                    elif role != "admin" and _sch_limit > 0:
-                        st.caption(f"지정 시간 추가: {_sch_used}/{_sch_limit}개 사용 (남은 횟수: {_sch_remain}개)")
+                        st.error("🔒 체험 계정은 지정 시간 추가가 불가능합니다.")
+                    elif role == "free":
+                        st.caption(f"지정 시간: {_sch_used}/{_sch_limit}개 · 최근 28일 추가 횟수: {_chg_used}/{_chg_total}회 (남은 추가 가능: {_chg_remain}회)")
                         if _sch_remain <= 0:
                             st.warning(f"⚠️ 지정 시간 추가 한도({_sch_limit}개)에 도달했습니다.")
+                        elif _chg_remain <= 0:
+                            st.warning(f"⚠️ 최근 28일 내 추가 횟수({_chg_total}회)를 모두 사용했습니다.")
 
                     if len(custom_schedules) < 5 and _can_add_sch:
                         with st.form("add_schedule_form"):
@@ -620,6 +632,8 @@ def show_main_app():
                                         "auto_enabled_default": auto_enabled_default,
                                         "auto_enabled_custom": auto_enabled_custom,
                                         "custom_schedules": custom_schedules})
+                                    if role == "free":
+                                        record_schedule_change(user_id)
                                     st.toast(f"✅ 자동 {new_hour:02d}:{new_min:02d} (최근 {new_range}시간) 추가!")
                                     st.rerun()
                     else:
@@ -1298,7 +1312,7 @@ def show_admin_page():
                 cur_b = user.get("custom_briefing_limit")
                 st.divider()
                 cur_sch = user.get("custom_schedule_limit")
-                st.caption("지정 시간 추가 한도 (개수)")
+                st.caption("지정 시간 추가 한도 (개수, 0=기본값)")
                 sch_input = st.number_input("지정 시간 한도", min_value=0, max_value=10,
                                             value=cur_sch if cur_sch is not None else 0, key=f"sch_{uid}",
                                             label_visibility="collapsed")
@@ -1307,12 +1321,31 @@ def show_admin_page():
                     if st.button("저장", key=f"schs_{uid}"):
                         from db import update_user_custom_schedule_limit
                         update_user_custom_schedule_limit(uid, sch_input if sch_input > 0 else None)
-                        st.toast("✅ 지정 시간 한도 저장!")
+                        st.toast("✅ 저장! (다음 주 월요일 적용)")
                         st.rerun()
                 with sc2:
                     if st.button("기본값", key=f"schr_{uid}"):
                         from db import update_user_custom_schedule_limit
                         update_user_custom_schedule_limit(uid, None)
+                        st.toast("✅ 초기화!")
+                        st.rerun()
+
+                cur_schc = user.get("custom_schedule_change_limit")
+                st.caption("28일 추가 횟수 한도 (0=기본값)")
+                schc_input = st.number_input("추가 횟수 한도", min_value=0, max_value=50,
+                                             value=cur_schc if cur_schc is not None else 0, key=f"schc_{uid}",
+                                             label_visibility="collapsed")
+                scc1, scc2 = st.columns(2)
+                with scc1:
+                    if st.button("저장", key=f"schcs_{uid}"):
+                        from db import update_user_custom_schedule_change_limit
+                        update_user_custom_schedule_change_limit(uid, schc_input if schc_input > 0 else None)
+                        st.toast("✅ 저장! (다음 주 월요일 적용)")
+                        st.rerun()
+                with scc2:
+                    if st.button("기본값", key=f"schcr_{uid}"):
+                        from db import update_user_custom_schedule_change_limit
+                        update_user_custom_schedule_change_limit(uid, None)
                         st.toast("✅ 초기화!")
                         st.rerun()
 
@@ -1337,23 +1370,21 @@ def show_admin_page():
 
                 # 이번 주 보너스 추가 (당주만 유효, 다음주 초기화)
                 st.caption("**이번 주 보너스 추가** (당주에만 적용, 다음주 자동 초기화)")
-                bonus_type = st.selectbox("항목", ["기본 수동 수집", "수동 상세 요약", "자동 상세 요약", "브리핑"], key=f"bt_{uid}")
+                bonus_type = st.selectbox("항목", ["기본 수동 수집", "수동 상세 요약", "자동 상세 요약", "브리핑", "시간대 추가 횟수"], key=f"bt_{uid}")
                 bonus_amt  = st.number_input("추가 횟수", min_value=1, max_value=100, value=5, key=f"ba_{uid}")
                 if st.button("➕ 보너스 추가", key=f"badd_{uid}", use_container_width=True):
                     type_map = {
-                        "기본 수동 수집": "manual_crawl_bonus",
-                        "수동 상세 요약": "manual_detail_bonus",
-                        "자동 상세 요약": "auto_detail_bonus",
-                        "브리핑":         "briefing_bonus"
+                        "기본 수동 수집":   "manual_crawl_bonus",
+                        "수동 상세 요약":   "manual_detail_bonus",
+                        "자동 상세 요약":   "auto_detail_bonus",
+                        "브리핑":           "briefing_bonus",
+                        "시간대 추가 횟수": "schedule_change_bonus",
                     }
                     add_user_bonus(uid, type_map[bonus_type], bonus_amt)
                     st.toast(f"✅ {user['email']} {bonus_type} +{bonus_amt}회 추가!")
                     st.rerun()
 
-    # ── 권한별 제한 설정 (수정8 - 다음주부터 적용 안내) ──
-    st.divider()
-    st.subheader("⚙️ 권한별 제한 설정")
-    st.info("⚠️ 여기서 변경한 한도는 **다음 주 월요일부터** 적용됩니다. 이번 주 즉시 추가가 필요하면 위 개별 계정의 **보너스 추가** 기능을 사용하세요.")
+    # ── 권한별 제한 설정 ──────────────────────────────────
 
     cur_trial_m  = int(get_admin_config("trial_weekly_limit")       or 15)
     cur_free_m   = int(get_admin_config("free_weekly_limit")        or 30)
@@ -1373,10 +1404,26 @@ def show_admin_page():
     st.markdown("**지정 시간 자동 수집 최대 범위 (시간)**")
     new_max_hours = st.number_input("최대 수집 범위 (시간)", min_value=1, max_value=48, value=cur_max_hours, key="nmh")
 
-    st.markdown("**지정 시간 추가 한도 (개수)**")
+    cur_trial_schc   = int(get_admin_config("trial_schedule_change_limit") or 0)
+    cur_free_schc    = int(get_admin_config("free_schedule_change_limit") or 4)
+
+    st.markdown("**지정 시간 추가 한도 (개수, 동시 보유)**")
     sch1, sch2 = st.columns(2)
     with sch1: new_trial_sch = st.number_input("체험 (0=불가)", min_value=0, max_value=10, value=cur_trial_sch, key="ntsch")
     with sch2: new_free_sch  = st.number_input("무료", min_value=0, max_value=10, value=cur_free_sch,  key="nfsch")
+
+    cur_trial_chg = int(get_admin_config("trial_schedule_change_limit") or 0)
+    cur_free_chg  = int(get_admin_config("free_schedule_change_limit")  or 4)
+    st.markdown("**지정 시간 추가 횟수 한도 (28일 누적, 재추가 포함)**")
+    st.info("⚠️ 여기서 변경한 한도는 **다음 주 월요일부터** 적용됩니다. 즉시 추가가 필요하면 개별 계정의 보너스 추가를 사용하세요.")
+    chg1, chg2 = st.columns(2)
+    with chg1: new_trial_chg = st.number_input("체험 (0=불가)", min_value=0, max_value=50, value=cur_trial_chg, key="ntchg")
+    with chg2: new_free_chg  = st.number_input("무료", min_value=0, max_value=50, value=cur_free_chg,  key="nfchg")
+
+    st.markdown("**28일 내 시간대 추가 가능 횟수**")
+    schc1, schc2 = st.columns(2)
+    with schc1: new_trial_schc = st.number_input("체험 (0=불가)", min_value=0, max_value=50, value=cur_trial_schc, key="ntschc")
+    with schc2: new_free_schc  = st.number_input("무료", min_value=0, max_value=50, value=cur_free_schc, key="nfschc")
 
     st.markdown("**기본 수동 수집 주간 한도**")
     s1, s2 = st.columns(2)
@@ -1403,10 +1450,38 @@ def show_admin_page():
     with bd1: new_tbd = st.number_input("체험", min_value=1, max_value=50,  value=cur_trial_bd, key="ntbd")
     with bd2: new_fbd = st.number_input("무료", min_value=1, max_value=100, value=cur_free_bd,  key="nfbd")
 
+    st.divider()
+    st.subheader("🎁 전체 계정 보너스 추가")
+    st.caption("모든 계정에 이번 주 즉시 보너스 횟수를 추가합니다.")
+    g_bonus_type = st.selectbox("항목", ["기본 수동 수집", "수동 상세 요약", "자동 상세 요약", "브리핑", "시간대 추가 횟수"], key="g_bt")
+    g_bonus_amt  = st.number_input("추가 횟수", min_value=1, max_value=100, value=5, key="g_ba")
+    if st.button("➕ 전체 계정에 보너스 추가", type="primary", use_container_width=True):
+        g_type_map = {
+            "기본 수동 수집":   "manual_crawl_bonus",
+            "수동 상세 요약":   "manual_detail_bonus",
+            "자동 상세 요약":   "auto_detail_bonus",
+            "브리핑":           "briefing_bonus",
+            "시간대 추가 횟수": "schedule_change_bonus",
+        }
+        all_u = get_all_users()
+        for u in all_u:
+            if u["role"] not in ["admin", "blocked"]:
+                add_user_bonus(u["user_id"], g_type_map[g_bonus_type], g_bonus_amt)
+        st.toast(f"✅ 전체 {len([u for u in all_u if u['role'] not in ['admin','blocked']])}개 계정에 {g_bonus_type} +{g_bonus_amt}회 추가!")
+        st.rerun()
+
+    st.divider()
+    st.subheader("⚙️ 권한별 제한 설정")
+    st.info("⚠️ 여기서 변경한 한도는 **다음 주 월요일부터** 적용됩니다. 이번 주 즉시 추가가 필요하면 위 개별 계정의 **보너스 추가** 기능을 사용하세요.")
+
     if st.button("💾 제한 설정 저장", type="primary"):
         set_admin_config("max_crawl_hours",               str(new_max_hours))
         set_admin_config("trial_custom_schedule_limit",   str(new_trial_sch))
         set_admin_config("free_custom_schedule_limit",    str(new_free_sch))
+        set_admin_config("trial_schedule_change_limit",   str(new_trial_chg))
+        set_admin_config("free_schedule_change_limit",    str(new_free_chg))
+        set_admin_config("trial_schedule_change_limit",   str(new_trial_schc))
+        set_admin_config("free_schedule_change_limit",    str(new_free_schc))
         set_admin_config("trial_weekly_limit",       str(new_tm))
         set_admin_config("free_weekly_limit",        str(new_fm))
         set_admin_config("trial_detail_manual_limit", str(new_tdm))
