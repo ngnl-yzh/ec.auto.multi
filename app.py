@@ -1010,7 +1010,8 @@ def show_main_app():
                                 briefing = _generate_briefing(articles, mode=briefing_mode)
                                 saved = _save_briefing_to_notion(
                                     notion_token, notion_db_id,
-                                    selected_group, briefing, len(articles)
+                                    selected_group, briefing, len(articles),
+                                    mode=briefing_mode
                                 )
                                 record_briefing(user_id, mode=briefing_mode)
                                 st.session_state["briefing_result"] = briefing
@@ -1138,16 +1139,18 @@ def _generate_briefing(articles: list, mode: str = "standard") -> str:
         return f"브리핑 생성 실패: {e}"
 
 
-def _save_briefing_to_notion(notion_token: str, notion_db_id: str, group: str, briefing: str, article_count: int) -> bool:
+def _save_briefing_to_notion(notion_token: str, notion_db_id: str, group: str, briefing: str, article_count: int, mode: str = "standard") -> bool:
     try:
         from notion_client import Client as NotionClient
         from datetime import date
-        notion     = NotionClient(auth=notion_token)
-        title      = f"📋 브리핑 | {group} ({article_count}개 기사)"
+        notion      = NotionClient(auth=notion_token)
+        mode_label  = "기본" if mode == "standard" else "상세"
+        title       = f"📋 브리핑-{mode_label} | {group} ({article_count}개 기사)"
+        time_slot   = f"📋브리핑-{mode_label} | {group}"
         base_props = {
             "이름":  {"title": [{"text": {"content": title}}]},
             "날짜":  {"date": {"start": date.today().isoformat()}},
-            "시간대": {"rich_text": [{"text": {"content": f"📋브리핑 | {group}"}}]},
+            "시간대": {"rich_text": [{"text": {"content": time_slot}}]},
             "요약":  {"rich_text": [{"text": {"content": briefing[:1990]}}]},
             "유형":  {"select": {"name": "브리핑"}},
         }
