@@ -1324,6 +1324,42 @@ def show_admin_page():
                 if bonus_items:
                     st.caption(f"🎁 이번 주 보너스: {' · '.join(bonus_items)}")
 
+                # 지정 시간 현재 개수
+                cur_sch_count = len((get_settings(uid) or {}).get("custom_schedules") or [])
+                sch_base  = _eff_limit("trial_custom_schedule_limit", "free_custom_schedule_limit", user.get("custom_schedule_limit"))
+                sch_total = (sch_base if sch_base != "무제한" else 99) + b_slot
+                st.markdown(f"- 지정 시간 보유: **{cur_sch_count}/{sch_total}개**")
+
+                # 다음 주 예정 현황
+                st.markdown("**📅 다음 주 예정 한도**")
+                def _next(trial_key, free_key, custom_val):
+                    if u_role == "admin": return "무제한"
+                    if custom_val is not None: return custom_val
+                    return int(get_admin_config(trial_key) or 0) if u_role == "trial" else int(get_admin_config(free_key) or 0)
+
+                next_crawl   = _next("trial_weekly_limit",         "free_weekly_limit",         user.get("custom_weekly_limit"))
+                next_det_m   = _next("trial_detail_manual_limit",  "free_detail_manual_limit",  user.get("custom_detail_manual_limit"))
+                next_det_a   = _next("trial_detail_auto_limit",    "free_detail_auto_limit",    user.get("custom_detail_auto_limit"))
+                next_brf_std = _next("trial_briefing_std_limit",   "free_briefing_std_limit",   user.get("custom_briefing_limit"))
+                next_brf_det = _next("trial_briefing_det_limit",   "free_briefing_det_limit",   user.get("custom_briefing_limit"))
+                next_chg     = _next("trial_schedule_change_limit","free_schedule_change_limit", user.get("custom_schedule_change_limit"))
+                next_sch     = _next("trial_custom_schedule_limit","free_custom_schedule_limit", user.get("custom_schedule_limit"))
+
+                st.markdown(
+                    f"- 기본 수동 수집: **{next_crawl}회** / "
+                    f"수동 상세: **{next_det_m}회** / "
+                    f"자동 상세: **{next_det_a}회**"
+                )
+                st.markdown(
+                    f"- 브리핑(기본): **{next_brf_std}회** / "
+                    f"브리핑(상세): **{next_brf_det}회**"
+                )
+                st.markdown(
+                    f"- 시간대 수정 가능: **{next_chg}회** / "
+                    f"지정 시간 보유: **{next_sch}개**"
+                )
+                st.caption("※ 다음 주 보너스는 초기화됩니다. 개별 설정값이 있으면 우선 적용.")
+
             with col2:
                 # 권한 변경
                 current_idx = role_options.index(user["role"]) if user["role"] in role_options else 0
@@ -1504,6 +1540,57 @@ def show_admin_page():
         set_admin_config("free_custom_schedule_limit",  str(new_free_sch))
         st.toast("✅ 즉시 적용 설정 저장 완료!")
         st.rerun()
+
+    st.divider()
+
+    # ── 전체 계정 현재 설정 현황 ────────────────────────────
+    st.subheader("📋 현재 전체 설정 현황")
+    _cur_tm  = int(get_admin_config("trial_weekly_limit")          or 15)
+    _cur_fm  = int(get_admin_config("free_weekly_limit")           or 30)
+    _cur_tdm = int(get_admin_config("trial_detail_manual_limit")   or 10)
+    _cur_fdm = int(get_admin_config("free_detail_manual_limit")    or 20)
+    _cur_tda = int(get_admin_config("trial_detail_auto_limit")     or 10)
+    _cur_fda = int(get_admin_config("free_detail_auto_limit")      or 20)
+    _cur_tbs = int(get_admin_config("trial_briefing_std_limit")    or 5)
+    _cur_fbs = int(get_admin_config("free_briefing_std_limit")     or 10)
+    _cur_tbd = int(get_admin_config("trial_briefing_det_limit")    or 3)
+    _cur_fbd = int(get_admin_config("free_briefing_det_limit")     or 5)
+    _cur_tc  = int(get_admin_config("trial_schedule_change_limit") or 0)
+    _cur_fc  = int(get_admin_config("free_schedule_change_limit")  or 4)
+    _cur_ts  = int(get_admin_config("trial_custom_schedule_limit") or 0)
+    _cur_fs  = int(get_admin_config("free_custom_schedule_limit")  or 2)
+    _cur_mh  = int(get_admin_config("max_crawl_hours")             or 12)
+
+    _c1, _c2 = st.columns(2)
+    with _c1:
+        st.markdown("**체험(trial)**")
+        st.markdown(f"""
+| 항목 | 한도 |
+|---|---|
+| 기본 수동 수집 | {_cur_tm}회/주 |
+| 수동 상세 요약 | {_cur_tdm}회/주 |
+| 자동 상세 요약 | {_cur_tda}회/주 |
+| 브리핑(기본) | {_cur_tbs}회/주 |
+| 브리핑(상세) | {_cur_tbd}회/주 |
+| 시간대 수정 가능 | {_cur_tc}회/28일 |
+| 지정 시간 보유 | {_cur_ts}개 |
+| 자동 수집 | ❌ 불가 |
+""")
+    with _c2:
+        st.markdown("**무료(free)**")
+        st.markdown(f"""
+| 항목 | 한도 |
+|---|---|
+| 기본 수동 수집 | {_cur_fm}회/주 |
+| 수동 상세 요약 | {_cur_fdm}회/주 |
+| 자동 상세 요약 | {_cur_fda}회/주 |
+| 브리핑(기본) | {_cur_fbs}회/주 |
+| 브리핑(상세) | {_cur_fbd}회/주 |
+| 시간대 수정 가능 | {_cur_fc}회/28일 |
+| 지정 시간 보유 | {_cur_fs}개 |
+| 자동 수집 범위 | 최대 {_cur_mh}시간 |
+""")
+    st.caption("※ 개별 설정이 있는 계정은 개별 설정이 우선 적용됩니다.")
 
     st.divider()
 
