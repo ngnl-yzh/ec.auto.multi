@@ -73,14 +73,24 @@ st.markdown("""
 # ─── 세션 복원 (쿠키 없음 - 수정7) ──────────────────────
 def _restore_session():
     if st.session_state.get("logged_in"):
-        # 이미 로그인된 경우 세션 연장
         sid = st.session_state.get("session_id")
         if sid:
             extend_session(sid, minutes=30)
         return
+
+    # 1) session_state 확인
     sid = st.session_state.get("session_id")
+
+    # 2) query_params에서 복원 (새로고침 후)
+    if not sid:
+        try:
+            sid = st.query_params.get("sid")
+        except Exception:
+            sid = None
+
     if not sid:
         return
+
     row = get_session(sid)
     if row:
         user = get_user_by_id(row["user_id"])
@@ -91,6 +101,16 @@ def _restore_session():
                 session_id=sid
             )
             extend_session(sid, minutes=30)
+            try:
+                st.query_params["sid"] = sid
+            except Exception:
+                pass
+    else:
+        # 세션 만료 시 query_params 정리
+        try:
+            st.query_params.clear()
+        except Exception:
+            pass
 
 _restore_session()
 
@@ -102,6 +122,10 @@ def _do_logout():
         logout(sid)
     for k in ["user_id", "email", "logged_in", "session_id", "role"]:
         st.session_state.pop(k, None)
+    try:
+        st.query_params.clear()
+    except Exception:
+        pass
     st.rerun()
 
 
@@ -147,6 +171,10 @@ def show_auth_page():
                             role=user.get("role", "trial"),
                             logged_in=True
                         )
+                        try:
+                            st.query_params["sid"] = result
+                        except Exception:
+                            pass
                         st.rerun()
                     else:
                         st.error(f"❌ {result}")

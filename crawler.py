@@ -334,23 +334,33 @@ def save_to_notion(title, url, summary, source_name, time_slot, notion_token, no
         "유형":  {"select": {"name": "기사"}},
         "기사 시간": {"rich_text": [{"text": {"content": pub_time}}]},
     }
-    try:
-        # 상태 포함해서 먼저 시도
-        notion.pages.create(
-            parent={"database_id": notion_db_id},
-            properties={**base_props, "상태": {"status": {"name": "읽기 전"}}}
-        )
-        print(f"✅ Notion 저장 완료: {title[:30]}...")
-    except Exception:
+    # 저장 시도 순서: 상태+기사시간 → 기사시간만 → 기본속성만
+    def _try_save(props):
         try:
-            # 상태 없이 재시도 (상태 옵션 미설정 시)
-            notion.pages.create(
-                parent={"database_id": notion_db_id},
-                properties=base_props
-            )
-            print(f"✅ Notion 저장 완료 (상태 제외): {title[:30]}...")
-        except Exception as e:
-            print(f"❌ Notion 저장 실패: {e}")
+            notion.pages.create(parent={"database_id": notion_db_id}, properties=props)
+            return True
+        except Exception:
+            return False
+
+    saved = False
+    # 1차: 상태 + 기사 시간 포함
+    if _try_save({**base_props, "상태": {"status": {"name": "읽기 전"}}}):
+        saved = True
+    # 2차: 기사 시간 포함, 상태 제외
+    elif _try_save(base_props):
+        saved = True
+    # 3차: 기사 시간 제외 (속성 없는 경우)
+    else:
+        base_no_time = {k: v for k, v in base_props.items() if k != "기사 시간"}
+        if _try_save({**base_no_time, "상태": {"status": {"name": "읽기 전"}}}):
+            saved = True
+        elif _try_save(base_no_time):
+            saved = True
+
+    if saved:
+        print(f"✅ Notion 저장 완료: {title[:30]}...")
+    else:
+        print(f"❌ Notion 저장 실패: {title[:30]}...")
 
 # ─── 메인 실행 ───────────────────────────────────────────
 def run_crawler(notion_token, notion_db_id, settings: dict, time_label="오전", hours=None, start_time=None, end_time=None, time_slot=None, user_email=None):
