@@ -1264,20 +1264,65 @@ def show_admin_page():
                         unlock_account(user["email"])
                         st.toast(f"✅ {user['email']} 잠금 해제!")
                         st.rerun()
-                w_crawl = get_weekly_crawl_count(uid)
-                w_detail = get_weekly_detail_count(uid)
+                w_crawl     = get_weekly_crawl_count(uid)
+                w_det_m     = get_weekly_detail_count(uid, crawl_type='manual')
+                w_det_a     = get_weekly_detail_count(uid, crawl_type='auto')
                 w_brief_std = get_weekly_briefing_count(uid, mode='standard')
                 w_brief_det = get_weekly_briefing_count(uid, mode='detailed')
-                st.write(f"**이번 주 수동 수집:** {w_crawl}회")
-                st.write(f"**이번 주 상세 요약:** {w_detail}회")
-                st.write(f"**이번 주 브리핑(기본):** {w_brief_std}회 / **브리핑(상세):** {w_brief_det}회")
+                w_sch_chg   = get_schedule_change_count(uid, days=28)
 
-                # 보너스 횟수 표시
+                # 보너스
                 b_crawl  = user.get("manual_crawl_bonus", 0)
                 b_brief  = user.get("briefing_bonus", 0)
-                b_detail = user.get("detail_bonus", 0)
-                if b_crawl or b_brief or b_detail:
-                    st.caption(f"🎁 보너스 — 수동수집: +{b_crawl} / 브리핑: +{b_brief} / 상세: +{b_detail}")
+                b_det_m  = user.get("manual_detail_bonus", 0)
+                b_det_a  = user.get("auto_detail_bonus", 0)
+                b_chg    = user.get("schedule_change_bonus", 0)
+                b_slot   = user.get("schedule_slot_bonus", 0)
+
+                # 전체 설정에서 역할별 한도 가져오기
+                u_role = user["role"]
+                def _eff_limit(trial_key, free_key, custom_val, bonus=0):
+                    """실제 적용 한도 계산"""
+                    if u_role == "admin":
+                        return "무제한"
+                    if custom_val is not None:
+                        return custom_val + bonus
+                    base = int(get_admin_config(trial_key) or 0) if u_role == "trial" else int(get_admin_config(free_key) or 0)
+                    return base + bonus
+
+                lim_crawl   = _eff_limit("trial_weekly_limit",          "free_weekly_limit",          user.get("custom_weekly_limit"),           b_crawl)
+                lim_det_m   = _eff_limit("trial_detail_manual_limit",    "free_detail_manual_limit",   user.get("custom_detail_manual_limit"),     b_det_m)
+                lim_det_a   = _eff_limit("trial_detail_auto_limit",      "free_detail_auto_limit",     user.get("custom_detail_auto_limit"),       b_det_a)
+                lim_brf_std = _eff_limit("trial_briefing_std_limit",     "free_briefing_std_limit",    user.get("custom_briefing_limit"),          b_brief)
+                lim_brf_det = _eff_limit("trial_briefing_det_limit",     "free_briefing_det_limit",    user.get("custom_briefing_limit"),          b_brief)
+                lim_chg     = _eff_limit("trial_schedule_change_limit",  "free_schedule_change_limit", user.get("custom_schedule_change_limit"),   b_chg)
+
+                def _bar(used, limit):
+                    if limit == "무제한":
+                        return f"**{used}회** / 무제한"
+                    remain = max(0, limit - used)
+                    pct = min(100, int(used / limit * 100)) if limit > 0 else 100
+                    bar = "🟩" * (pct // 20) + "⬜" * (5 - pct // 20)
+                    return f"**{used}/{limit}회** {bar} (남은: **{remain}회**)"
+
+                st.markdown("**📊 이번 주 사용 현황**")
+                st.markdown(f"- 기본 수동 수집: {_bar(w_crawl, lim_crawl)}")
+                st.markdown(f"- 수동 상세 요약: {_bar(w_det_m, lim_det_m)}")
+                st.markdown(f"- 자동 상세 요약: {_bar(w_det_a, lim_det_a)}")
+                st.markdown(f"- 브리핑(기본): {_bar(w_brief_std, lim_brf_std)}")
+                st.markdown(f"- 브리핑(상세): {_bar(w_brief_det, lim_brf_det)}")
+                st.markdown(f"- 시간대 수정 (28일): {_bar(w_sch_chg, lim_chg)}")
+
+                # 보너스 표시
+                bonus_items = []
+                if b_crawl:  bonus_items.append(f"수동수집 +{b_crawl}")
+                if b_det_m:  bonus_items.append(f"수동상세 +{b_det_m}")
+                if b_det_a:  bonus_items.append(f"자동상세 +{b_det_a}")
+                if b_brief:  bonus_items.append(f"브리핑 +{b_brief}")
+                if b_chg:    bonus_items.append(f"수정가능 +{b_chg}")
+                if b_slot:   bonus_items.append(f"지정시간개수 +{b_slot}")
+                if bonus_items:
+                    st.caption(f"🎁 이번 주 보너스: {' · '.join(bonus_items)}")
 
             with col2:
                 # 권한 변경
@@ -1498,7 +1543,30 @@ def show_admin_page():
     with bd1: new_tbd = st.number_input("체험", min_value=1, max_value=50,  value=cur_trial_bd, key="ntbd")
     with bd2: new_fbd = st.number_input("무료", min_value=1, max_value=100, value=cur_free_bd,  key="nfbd")
 
-    if st.button("💾 다음 주 적용 설정 저장", type="primary", key="save_next_week"):
+    # ── 변경 사항 미리보기 ──────────────────────────────────
+    changed = []
+    if new_trial_chg != cur_trial_chg: changed.append(f"시간대 수정 횟수(체험): {cur_trial_chg} → {new_trial_chg}")
+    if new_free_chg  != cur_free_chg:  changed.append(f"시간대 수정 횟수(무료): {cur_free_chg} → {new_free_chg}")
+    if new_tm  != cur_trial_m:   changed.append(f"기본 수동 수집(체험): {cur_trial_m} → {new_tm}")
+    if new_fm  != cur_free_m:    changed.append(f"기본 수동 수집(무료): {cur_free_m} → {new_fm}")
+    if new_tdm != cur_trial_dm:  changed.append(f"수동 상세 요약(체험): {cur_trial_dm} → {new_tdm}")
+    if new_fdm != cur_free_dm:   changed.append(f"수동 상세 요약(무료): {cur_free_dm} → {new_fdm}")
+    if new_tda != cur_trial_da:  changed.append(f"자동 상세 요약(체험): {cur_trial_da} → {new_tda}")
+    if new_fda != cur_free_da:   changed.append(f"자동 상세 요약(무료): {cur_free_da} → {new_fda}")
+    if new_tbs != cur_trial_bs:  changed.append(f"브리핑 기본(체험): {cur_trial_bs} → {new_tbs}")
+    if new_fbs != cur_free_bs:   changed.append(f"브리핑 기본(무료): {cur_free_bs} → {new_fbs}")
+    if new_tbd != cur_trial_bd:  changed.append(f"브리핑 상세(체험): {cur_trial_bd} → {new_tbd}")
+    if new_fbd != cur_free_bd:   changed.append(f"브리핑 상세(무료): {cur_free_bd} → {new_fbd}")
+
+    if changed:
+        st.markdown("**📋 다음 주 적용 예정 변경 사항:**")
+        for c in changed:
+            st.markdown(f"  - {c}")
+    else:
+        st.caption("변경 사항 없음")
+
+    if st.button("💾 다음 주 적용 설정 저장", type="primary", key="save_next_week",
+                 disabled=(len(changed) == 0)):
         set_admin_config("trial_schedule_change_limit", str(new_trial_chg))
         set_admin_config("free_schedule_change_limit",  str(new_free_chg))
         set_admin_config("trial_weekly_limit",          str(new_tm))
