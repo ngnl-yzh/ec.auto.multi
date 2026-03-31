@@ -9,7 +9,6 @@ from db import (
     unlock_account,
     record_schedule_change, get_schedule_change_count,
     update_user_custom_schedule_change_limit,
-    record_schedule_change, get_recent_schedule_change_count,
     update_notion_credentials, get_session,
     get_all_users, update_user_role,
     record_manual_crawl, get_weekly_crawl_count,
@@ -599,7 +598,7 @@ def show_main_app():
                     _chg_limit  = _get_limit(role, user_row, "trial_schedule_change_limit", "free_schedule_change_limit", "custom_schedule_change_limit")
                     _chg_bonus  = (user_row.get("schedule_change_bonus") or 0) if user_row else 0
                     _chg_total  = _chg_limit + _chg_bonus
-                    _chg_used   = get_recent_schedule_change_count(user_id, days=28) if role == "free" else 0
+                    _chg_used   = get_schedule_change_count(user_id, days=28) if role == "free" else 0
                     _chg_remain = max(0, _chg_total - _chg_used)
                     _can_add_sch = (role == "admin") or (_sch_limit > 0 and _sch_remain > 0 and (role != "free" or _chg_remain > 0))
 
