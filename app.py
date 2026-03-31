@@ -576,16 +576,19 @@ def show_main_app():
                                     st.rerun()
 
                     # 지정 시간 추가 한도 체크
-                    _sch_limit = _get_limit(role, user_row, "trial_custom_schedule_limit", "free_custom_schedule_limit", "custom_schedule_limit")
-                    _sch_used  = len(custom_schedules)
+                    _sch_limit  = _get_limit(role, user_row, "trial_custom_schedule_limit", "free_custom_schedule_limit", "custom_schedule_limit")
+                    _sch_used   = len(custom_schedules)
                     _sch_remain = max(0, _sch_limit - _sch_used)
+                    _can_add_sch = (role == "admin") or (_sch_limit > 0 and _sch_remain > 0)
 
-                    if role != "admin" and _sch_remain <= 0 and _sch_limit > 0:
-                        st.warning(f"⚠️ 지정 시간 추가 한도({_sch_limit}개)에 도달했습니다. 관리자에게 문의하세요.")
-                    elif role != "admin" and _sch_limit == 0:
-                        st.info("⚠️ 체험 계정은 지정 시간 추가가 불가합니다.")
+                    if role == "trial":
+                        st.error("🔒 체험 계정은 지정 시간 추가가 불가능합니다. 무료 플랜으로 업그레이드하세요.")
+                    elif role != "admin" and _sch_limit > 0:
+                        st.caption(f"지정 시간 추가: {_sch_used}/{_sch_limit}개 사용 (남은 횟수: {_sch_remain}개)")
+                        if _sch_remain <= 0:
+                            st.warning(f"⚠️ 지정 시간 추가 한도({_sch_limit}개)에 도달했습니다.")
 
-                    if len(custom_schedules) < 5 and (role == "admin" or (_sch_limit > 0 and _sch_remain > 0)):
+                    if len(custom_schedules) < 5 and _can_add_sch:
                         with st.form("add_schedule_form"):
                             nc1, nc2, nc3, nc4 = st.columns([2, 2, 2, 1])
                             with nc1:
