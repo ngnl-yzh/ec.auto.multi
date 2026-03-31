@@ -1406,15 +1406,19 @@ def show_admin_page():
 
                 # 이번 주 보너스 추가 (당주만 유효, 다음주 초기화)
                 st.caption("**이번 주 보너스 추가** (당주에만 적용, 다음주 자동 초기화)")
-                bonus_type = st.selectbox("항목", ["기본 수동 수집", "수동 상세 요약", "자동 상세 요약", "브리핑", "시간대 추가 횟수"], key=f"bt_{uid}")
+                bonus_type = st.selectbox("항목", [
+                    "기본 수동 수집", "수동 상세 요약", "자동 상세 요약",
+                    "브리핑", "수정 가능 횟수", "지정 시간 개수"
+                ], key=f"bt_{uid}")
                 bonus_amt  = st.number_input("추가 횟수", min_value=1, max_value=100, value=5, key=f"ba_{uid}")
                 if st.button("➕ 보너스 추가", key=f"badd_{uid}", use_container_width=True):
                     type_map = {
-                        "기본 수동 수집":   "manual_crawl_bonus",
-                        "수동 상세 요약":   "manual_detail_bonus",
-                        "자동 상세 요약":   "auto_detail_bonus",
-                        "브리핑":           "briefing_bonus",
+                        "기본 수동 수집": "manual_crawl_bonus",
+                        "수동 상세 요약": "manual_detail_bonus",
+                        "자동 상세 요약": "auto_detail_bonus",
+                        "브리핑":        "briefing_bonus",
                         "수정 가능 횟수": "schedule_change_bonus",
+                        "지정 시간 개수": "schedule_slot_bonus",
                     }
                     add_user_bonus(uid, type_map[bonus_type], bonus_amt)
                     st.toast(f"✅ {user['email']} {bonus_type} +{bonus_amt}회 추가!")
