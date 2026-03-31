@@ -1432,38 +1432,46 @@ def show_admin_page():
     cur_trial_bd = int(get_admin_config("trial_briefing_det_limit") or 3)
     cur_free_bd  = int(get_admin_config("free_briefing_det_limit")  or 5)
 
-    cur_max_hours    = int(get_admin_config("max_crawl_hours") or 12)
-    cur_trial_sch    = int(get_admin_config("trial_custom_schedule_limit") or 0)
-    cur_free_sch     = int(get_admin_config("free_custom_schedule_limit") or 2)
+    # ── 즉시 적용 설정 ──────────────────────────────────
+    st.subheader("⚡ 즉시 적용 설정")
+    st.caption("저장 즉시 바로 반영됩니다.")
+
+    cur_max_hours = int(get_admin_config("max_crawl_hours") or 12)
+    cur_trial_sch = int(get_admin_config("trial_custom_schedule_limit") or 0)
+    cur_free_sch  = int(get_admin_config("free_custom_schedule_limit") or 2)
 
     st.markdown("**지정 시간 자동 수집 최대 범위 (시간)**")
     new_max_hours = st.number_input("최대 수집 범위 (시간)", min_value=1, max_value=48, value=cur_max_hours, key="nmh")
 
-    cur_trial_schc   = int(get_admin_config("trial_schedule_change_limit") or 0)
-    cur_free_schc    = int(get_admin_config("free_schedule_change_limit") or 4)
-
-    st.markdown("**지정 시간 추가 한도 (개수, 동시 보유)**")
+    st.markdown("**지정 시간 보유 한도 (동시에 설정 가능한 개수)**")
     sch1, sch2 = st.columns(2)
     with sch1: new_trial_sch = st.number_input("체험 (0=불가)", min_value=0, max_value=10, value=cur_trial_sch, key="ntsch")
-    with sch2: new_free_sch  = st.number_input("무료", min_value=0, max_value=10, value=cur_free_sch,  key="nfsch")
+    with sch2: new_free_sch  = st.number_input("무료", min_value=0, max_value=10, value=cur_free_sch, key="nfsch")
+
+    if st.button("💾 즉시 적용 설정 저장", type="primary", key="save_instant"):
+        set_admin_config("max_crawl_hours",             str(new_max_hours))
+        set_admin_config("trial_custom_schedule_limit", str(new_trial_sch))
+        set_admin_config("free_custom_schedule_limit",  str(new_free_sch))
+        st.toast("✅ 즉시 적용 설정 저장 완료!")
+        st.rerun()
+
+    st.divider()
+
+    # ── 다음 주 적용 설정 ────────────────────────────────
+    st.subheader("📅 다음 주 월요일부터 적용 설정")
+    st.info("⚠️ 아래 한도는 **다음 주 월요일부터** 적용됩니다. 즉시 추가가 필요하면 개별 계정 또는 전체 계정의 **보너스 추가**를 사용하세요.")
 
     cur_trial_chg = int(get_admin_config("trial_schedule_change_limit") or 0)
     cur_free_chg  = int(get_admin_config("free_schedule_change_limit")  or 4)
     st.markdown("**지정 시간 수정 가능 횟수 한도 (28일 누적)**")
-    st.info("⚠️ 여기서 변경한 한도는 **다음 주 월요일부터** 적용됩니다. 즉시 추가가 필요하면 개별 계정의 보너스 추가를 사용하세요.")
     chg1, chg2 = st.columns(2)
     with chg1: new_trial_chg = st.number_input("체험 (0=불가)", min_value=0, max_value=50, value=cur_trial_chg, key="ntchg")
-    with chg2: new_free_chg  = st.number_input("무료", min_value=0, max_value=50, value=cur_free_chg,  key="nfchg")
-
-    st.markdown("**28일 내 시간대 추가 가능 횟수**")
-    schc1, schc2 = st.columns(2)
-    with schc1: new_trial_schc = st.number_input("체험 (0=불가)", min_value=0, max_value=50, value=cur_trial_schc, key="ntschc")
-    with schc2: new_free_schc  = st.number_input("무료", min_value=0, max_value=50, value=cur_free_schc, key="nfschc")
+    with chg2: new_free_chg  = st.number_input("무료", min_value=0, max_value=50, value=cur_free_chg, key="nfchg")
 
     st.markdown("**기본 수동 수집 주간 한도**")
     s1, s2 = st.columns(2)
-    with s1: new_tm = st.number_input("체험", min_value=1, max_value=100,  value=cur_trial_m,  key="ntm")
-    with s2: new_fm = st.number_input("무료", min_value=1, max_value=200,  value=cur_free_m,   key="nfm")
+    with s1: new_tm = st.number_input("체험", min_value=1, max_value=100, value=cur_trial_m,  key="ntm")
+    with s2: new_fm = st.number_input("무료", min_value=1, max_value=200, value=cur_free_m,   key="nfm")
 
     st.markdown("**수동 상세 요약 주간 한도**")
     d1, d2 = st.columns(2)
@@ -1485,53 +1493,46 @@ def show_admin_page():
     with bd1: new_tbd = st.number_input("체험", min_value=1, max_value=50,  value=cur_trial_bd, key="ntbd")
     with bd2: new_fbd = st.number_input("무료", min_value=1, max_value=100, value=cur_free_bd,  key="nfbd")
 
+    if st.button("💾 다음 주 적용 설정 저장", type="primary", key="save_next_week"):
+        set_admin_config("trial_schedule_change_limit", str(new_trial_chg))
+        set_admin_config("free_schedule_change_limit",  str(new_free_chg))
+        set_admin_config("trial_weekly_limit",          str(new_tm))
+        set_admin_config("free_weekly_limit",           str(new_fm))
+        set_admin_config("trial_detail_manual_limit",   str(new_tdm))
+        set_admin_config("free_detail_manual_limit",    str(new_fdm))
+        set_admin_config("trial_detail_auto_limit",     str(new_tda))
+        set_admin_config("free_detail_auto_limit",      str(new_fda))
+        set_admin_config("trial_briefing_std_limit",    str(new_tbs))
+        set_admin_config("free_briefing_std_limit",     str(new_fbs))
+        set_admin_config("trial_briefing_det_limit",    str(new_tbd))
+        set_admin_config("free_briefing_det_limit",     str(new_fbd))
+        st.toast("✅ 저장 완료! 다음 주 월요일부터 적용됩니다.")
+        st.rerun()
+
     st.divider()
+
+    # ── 전체 계정 보너스 추가 ────────────────────────────
     st.subheader("🎁 전체 계정 보너스 추가")
     st.caption("모든 계정에 이번 주 즉시 보너스 횟수를 추가합니다.")
     g_bonus_type = st.selectbox("항목", [
         "기본 수동 수집", "수동 상세 요약", "자동 상세 요약",
         "브리핑", "수정 가능 횟수", "지정 시간 개수"
     ], key="g_bt")
-    g_bonus_amt  = st.number_input("추가 횟수", min_value=1, max_value=100, value=5, key="g_ba")
+    g_bonus_amt = st.number_input("추가 횟수", min_value=1, max_value=100, value=5, key="g_ba")
     if st.button("➕ 전체 계정에 보너스 추가", type="primary", use_container_width=True):
         g_type_map = {
-            "기본 수동 수집":   "manual_crawl_bonus",
-            "수동 상세 요약":   "manual_detail_bonus",
-            "자동 상세 요약":   "auto_detail_bonus",
-            "브리핑":           "briefing_bonus",
+            "기본 수동 수집": "manual_crawl_bonus",
+            "수동 상세 요약": "manual_detail_bonus",
+            "자동 상세 요약": "auto_detail_bonus",
+            "브리핑":        "briefing_bonus",
             "수정 가능 횟수": "schedule_change_bonus",
             "지정 시간 개수": "schedule_slot_bonus",
         }
         all_u = get_all_users()
-        for u in all_u:
-            if u["role"] not in ["admin", "blocked"]:
-                add_user_bonus(u["user_id"], g_type_map[g_bonus_type], g_bonus_amt)
-        st.toast(f"✅ 전체 {len([u for u in all_u if u['role'] not in ['admin','blocked']])}개 계정에 {g_bonus_type} +{g_bonus_amt}회 추가!")
-        st.rerun()
-
-    st.divider()
-    st.subheader("⚙️ 권한별 제한 설정")
-    st.info("⚠️ 여기서 변경한 한도는 **다음 주 월요일부터** 적용됩니다. 이번 주 즉시 추가가 필요하면 위 개별 계정의 **보너스 추가** 기능을 사용하세요.")
-
-    if st.button("💾 제한 설정 저장", type="primary"):
-        set_admin_config("max_crawl_hours",               str(new_max_hours))
-        set_admin_config("trial_custom_schedule_limit",   str(new_trial_sch))
-        set_admin_config("free_custom_schedule_limit",    str(new_free_sch))
-        set_admin_config("trial_schedule_change_limit",   str(new_trial_chg))
-        set_admin_config("free_schedule_change_limit",    str(new_free_chg))
-        set_admin_config("trial_schedule_change_limit",   str(new_trial_schc))
-        set_admin_config("free_schedule_change_limit",    str(new_free_schc))
-        set_admin_config("trial_weekly_limit",       str(new_tm))
-        set_admin_config("free_weekly_limit",        str(new_fm))
-        set_admin_config("trial_detail_manual_limit", str(new_tdm))
-        set_admin_config("free_detail_manual_limit",  str(new_fdm))
-        set_admin_config("trial_detail_auto_limit",   str(new_tda))
-        set_admin_config("free_detail_auto_limit",    str(new_fda))
-        set_admin_config("trial_briefing_std_limit", str(new_tbs))
-        set_admin_config("free_briefing_std_limit",  str(new_fbs))
-        set_admin_config("trial_briefing_det_limit", str(new_tbd))
-        set_admin_config("free_briefing_det_limit",  str(new_fbd))
-        st.toast("✅ 제한 설정 저장 완료! (다음 주부터 적용)")
+        targets = [u for u in all_u if u["role"] not in ["admin", "blocked"]]
+        for u in targets:
+            add_user_bonus(u["user_id"], g_type_map[g_bonus_type], g_bonus_amt)
+        st.toast(f"✅ {len(targets)}개 계정에 {g_bonus_type} +{g_bonus_amt}회 추가!")
         st.rerun()
 
 
