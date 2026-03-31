@@ -344,6 +344,9 @@ def _setup_notion_db(token: str, db_id: str) -> tuple:
         if "시간대" not in existing:
             props_to_add["시간대"] = {"rich_text": {}}
 
+        if "기사 시간" not in existing:
+            props_to_add["기사 시간"] = {"rich_text": {}}
+
         if "유형" not in existing:
             props_to_add["유형"] = {
                 "select": {
@@ -355,7 +358,7 @@ def _setup_notion_db(token: str, db_id: str) -> tuple:
             }
 
         added   = list(props_to_add.keys())
-        skipped = [p for p in ["URL","날짜","상태","요약","시간대","유형"] if p in existing]
+        skipped = [p for p in ["URL","날짜","상태","요약","시간대","기사 시간","유형"] if p in existing]
         errors  = []
 
         if props_to_add:

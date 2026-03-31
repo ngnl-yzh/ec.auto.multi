@@ -305,8 +305,22 @@ def summarize_article(title, content, summary_mode="standard"):
         return "요약 실패"
 
 # ─── Notion 저장 ─────────────────────────────────────────
-def save_to_notion(title, url, summary, source_name, time_slot, notion_token, notion_db_id):
+def save_to_notion(title, url, summary, source_name, time_slot, notion_token, notion_db_id, article_date=None):
     notion = NotionClient(auth=notion_token)
+
+    # 기사 발행 시간 포맷
+    if article_date:
+        try:
+            from zoneinfo import ZoneInfo as _ZI
+            if hasattr(article_date, 'tzinfo') and article_date.tzinfo:
+                pub_time = article_date.astimezone(_ZI('Asia/Seoul')).strftime('%Y-%m-%d %H:%M')
+            else:
+                pub_time = article_date.strftime('%Y-%m-%d %H:%M')
+        except Exception:
+            pub_time = article_date.strftime('%Y-%m-%d %H:%M') if article_date else ""
+    else:
+        pub_time = ""
+
     base_props = {
         "이름":  {"title": [{"text": {"content": title}}]},
         "URL":   {"url": url},
@@ -314,6 +328,7 @@ def save_to_notion(title, url, summary, source_name, time_slot, notion_token, no
         "요약":  {"rich_text": [{"text": {"content": summary[:2000]}}]},
         "시간대": {"rich_text": [{"text": {"content": time_slot}}]},
         "유형":  {"select": {"name": "기사"}},
+        "기사 시간": {"rich_text": [{"text": {"content": pub_time}}]},
     }
     try:
         # 상태 포함해서 먼저 시도
@@ -404,7 +419,7 @@ def run_crawler(notion_token, notion_db_id, settings: dict, time_label="오전",
 
             print(f"   📄 처리 중: {title[:40]}...")
             summary = summarize_article(title, content, summary_mode=summary_mode)
-            save_to_notion(title, url, summary, source["name"], time_slot, notion_token, notion_db_id)
+            save_to_notion(title, url, summary, source["name"], time_slot, notion_token, notion_db_id, article_date=article_date)
             existing_urls.add(url)
             total_saved += 1
 
