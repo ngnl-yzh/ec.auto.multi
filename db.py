@@ -136,6 +136,8 @@ def init_db():
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS auto_detail_bonus INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS schedule_change_bonus INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS schedule_slot_bonus INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS briefing_std_bonus INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS briefing_det_bonus INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS bonus_reset_week TEXT DEFAULT NULL")
 
         cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS summary_mode_auto TEXT DEFAULT 'standard'")
@@ -296,6 +298,7 @@ def update_user_custom_schedule_change_limit(user_id: int, limit):
 def add_user_bonus(user_id: int, bonus_type: str, amount: int):
     allowed = {
         'manual_crawl_bonus', 'briefing_bonus',
+        'briefing_std_bonus', 'briefing_det_bonus',
         'manual_detail_bonus', 'auto_detail_bonus',
         'schedule_change_bonus', 'schedule_slot_bonus'
     }
@@ -332,6 +335,8 @@ def get_all_users():
                    COALESCE(auto_detail_bonus, 0)      AS auto_detail_bonus,
                    COALESCE(schedule_change_bonus, 0)  AS schedule_change_bonus,
                    COALESCE(schedule_slot_bonus, 0)    AS schedule_slot_bonus,
+                   COALESCE(briefing_std_bonus, 0)     AS briefing_std_bonus,
+                   COALESCE(briefing_det_bonus, 0)     AS briefing_det_bonus,
                    CASE WHEN notion_token_enc IS NOT NULL THEN TRUE ELSE FALSE END AS notion_connected
             FROM users
             ORDER BY created_at DESC

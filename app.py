@@ -1274,7 +1274,9 @@ def show_admin_page():
 
                 # 보너스
                 b_crawl  = user.get("manual_crawl_bonus", 0)
-                b_brief  = user.get("briefing_bonus", 0)
+                b_brief     = user.get("briefing_bonus", 0)
+                b_brf_std   = user.get("briefing_std_bonus", 0)
+                b_brf_det   = user.get("briefing_det_bonus", 0)
                 b_det_m  = user.get("manual_detail_bonus", 0)
                 b_det_a  = user.get("auto_detail_bonus", 0)
                 b_chg    = user.get("schedule_change_bonus", 0)
@@ -1319,7 +1321,9 @@ def show_admin_page():
                 if b_crawl:  bonus_items.append(f"수동수집 +{b_crawl}")
                 if b_det_m:  bonus_items.append(f"수동상세 +{b_det_m}")
                 if b_det_a:  bonus_items.append(f"자동상세 +{b_det_a}")
-                if b_brief:  bonus_items.append(f"브리핑 +{b_brief}")
+                if b_brief:    bonus_items.append(f"브리핑(공용) +{b_brief}")
+                if b_brf_std:  bonus_items.append(f"브리핑기본 +{b_brf_std}")
+                if b_brf_det:  bonus_items.append(f"브리핑상세 +{b_brf_det}")
                 if b_chg:    bonus_items.append(f"수정가능 +{b_chg}")
                 if b_slot:   bonus_items.append(f"지정시간개수 +{b_slot}")
                 if bonus_items:
@@ -1490,7 +1494,8 @@ def show_admin_page():
                 st.caption("**이번 주 보너스 추가** (당주에만 적용, 다음주 자동 초기화)")
                 bonus_type = st.selectbox("항목", [
                     "기본 수동 수집", "수동 상세 요약", "자동 상세 요약",
-                    "브리핑", "수정 가능 횟수", "지정 시간 개수"
+                    "브리핑(기본)", "브리핑(상세)",
+                    "수정 가능 횟수", "지정 시간 개수"
                 ], key=f"bt_{uid}")
                 bonus_amt  = st.number_input("추가 횟수", min_value=1, max_value=100, value=5, key=f"ba_{uid}")
                 if st.button("➕ 보너스 추가", key=f"badd_{uid}", use_container_width=True):
@@ -1498,7 +1503,8 @@ def show_admin_page():
                         "기본 수동 수집": "manual_crawl_bonus",
                         "수동 상세 요약": "manual_detail_bonus",
                         "자동 상세 요약": "auto_detail_bonus",
-                        "브리핑":        "briefing_bonus",
+                        "브리핑(기본)":   "briefing_std_bonus",
+                        "브리핑(상세)":   "briefing_det_bonus",
                         "수정 가능 횟수": "schedule_change_bonus",
                         "지정 시간 개수": "schedule_slot_bonus",
                     }
@@ -1677,7 +1683,8 @@ def show_admin_page():
     st.caption("모든 계정에 이번 주 즉시 보너스 횟수를 추가합니다.")
     g_bonus_type = st.selectbox("항목", [
         "기본 수동 수집", "수동 상세 요약", "자동 상세 요약",
-        "브리핑", "수정 가능 횟수", "지정 시간 개수"
+        "브리핑(기본)", "브리핑(상세)",
+        "수정 가능 횟수", "지정 시간 개수"
     ], key="g_bt")
     g_bonus_amt = st.number_input("추가 횟수", min_value=1, max_value=100, value=5, key="g_ba")
     if st.button("➕ 전체 계정에 보너스 추가", type="primary", use_container_width=True):
@@ -1685,7 +1692,8 @@ def show_admin_page():
             "기본 수동 수집": "manual_crawl_bonus",
             "수동 상세 요약": "manual_detail_bonus",
             "자동 상세 요약": "auto_detail_bonus",
-            "브리핑":        "briefing_bonus",
+            "브리핑(기본)":   "briefing_std_bonus",
+            "브리핑(상세)":   "briefing_det_bonus",
             "수정 가능 횟수": "schedule_change_bonus",
             "지정 시간 개수": "schedule_slot_bonus",
         }
