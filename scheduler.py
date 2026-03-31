@@ -48,9 +48,10 @@ def _get_time_range_for_schedule(all_schedules: list, current_hour: int, current
     return start, end
 
 
-def _crawl_job(user_id: int, hour: int, minute: int, job_type: str = "default"):
+def _crawl_job(user_id: int, hour: int, minute: int, job_type: str = "default", range_hours: int = None):
     """
     job_type: 'default' = 기본 스케줄, 'custom' = 커스텀 스케줄
+    range_hours: 커스텀 스케줄의 수집 범위 (시간 단위, 직접 지정)
     """
     from db import get_user_by_id, get_settings
     from crawler import run_crawler, NEWS_SOURCES
@@ -79,19 +80,20 @@ def _crawl_job(user_id: int, hour: int, minute: int, job_type: str = "default"):
             return
 
         notion_token = decrypt_token(notion_token_enc)
+        now = datetime.now(ZoneInfo('Asia/Seoul')).replace(tzinfo=None)
 
-        # 전체 스케줄 (기본 + 커스텀 활성 항목 합산)
-        default_schedules = [
-            {"hour": 7,  "minute": 0, "enabled": settings.get("auto_enabled_default", False), "is_default": True},
-            {"hour": 20, "minute": 0, "enabled": settings.get("auto_enabled_default", False), "is_default": True},
-        ]
-        custom_schedules = settings.get("custom_schedules") or []
-        if isinstance(custom_schedules, str):
-            custom_schedules = json.loads(custom_schedules)
-        custom_active = [s for s in custom_schedules if s.get("enabled", True) and settings.get("auto_enabled_custom", False)]
-
-        all_schedules = default_schedules + custom_active
-        start_time, end_time = _get_time_range_for_schedule(all_schedules, hour, minute)
+        if job_type == "default":
+            # 기본 스케줄: 7시/20시 → 이전 기본 스케줄 시간부터
+            default_schedules = [
+                {"hour": 7,  "minute": 0, "enabled": True, "is_default": True},
+                {"hour": 20, "minute": 0, "enabled": True, "is_default": True},
+            ]
+            start_time, end_time = _get_time_range_for_schedule(default_schedules, hour, minute)
+        else:
+            # 커스텀 스케줄: range_hours 설정값 직접 사용 (겹침 무관)
+            h = range_hours if range_hours else 6
+            end_time   = now
+            start_time = now - timedelta(hours=h)
 
         job_label = "기본 자동" if job_type == "default" else "커스텀 자동"
         time_slot = (
@@ -161,12 +163,13 @@ def add_user_jobs(user_id: int, settings: dict = None):
         for i, sch in enumerate(custom_schedules):
             if not sch.get("enabled", True):
                 continue
-            hour   = sch["hour"]
-            minute = sch["minute"]
+            hour       = sch["hour"]
+            minute     = sch["minute"]
+            rng_hours  = sch.get("range_hours", 6)
             scheduler.add_job(
                 _crawl_job,
                 trigger=CronTrigger(hour=hour, minute=minute, timezone=KST),
-                args=[user_id, hour, minute, "custom"],
+                args=[user_id, hour, minute, "custom", rng_hours],
                 id=f"{user_id}_custom_{i}", replace_existing=True,
             )
             count += 1

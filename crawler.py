@@ -408,5 +408,28 @@ def run_crawler(notion_token, notion_db_id, settings: dict, time_label="오전",
             existing_urls.add(url)
             total_saved += 1
 
+    # 수집 결과 없을 때 Notion에 기록
+    if total_saved == 0 and time_label == "자동":
+        try:
+            from notion_client import Client as NotionClient
+            notion = NotionClient(auth=notion_token)
+            base_props = {
+                "이름":  {"title": [{"text": {"content": f"[기사 없음] {time_slot}"}}]},
+                "날짜":  {"date": {"start": date.today().isoformat()}},
+                "시간대": {"rich_text": [{"text": {"content": time_slot}}]},
+                "요약":  {"rich_text": [{"text": {"content": "해당 시간대에 수집된 경제 기사가 없습니다."}}]},
+                "유형":  {"select": {"name": "기사"}},
+            }
+            try:
+                notion.pages.create(
+                    parent={"database_id": notion_db_id},
+                    properties={**base_props, "상태": {"status": {"name": "읽기 전"}}}
+                )
+            except Exception:
+                notion.pages.create(parent={"database_id": notion_db_id}, properties=base_props)
+            print("📭 기사 없음 항목 Notion 저장")
+        except Exception as e:
+            print(f"기사 없음 저장 실패: {e}")
+
     print(f"\n✅ 완료! 총 {total_saved}개 저장, {total_skipped}개 중복 건너뜀")
     return total_saved, total_skipped

@@ -101,9 +101,13 @@ def init_db():
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_weekly_limit INTEGER DEFAULT NULL")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_briefing_limit INTEGER DEFAULT NULL")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_detail_limit INTEGER DEFAULT NULL")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_detail_manual_limit INTEGER DEFAULT NULL")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_detail_auto_limit INTEGER DEFAULT NULL")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS manual_crawl_bonus INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS briefing_bonus INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS detail_bonus INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS manual_detail_bonus INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS auto_detail_bonus INTEGER DEFAULT 0")
 
         # user_settings 마이그레이션
         cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS summary_mode_auto TEXT DEFAULT 'standard'")
@@ -141,6 +145,7 @@ def init_db():
             ('free_detail_manual_limit',   '20'),
             ('trial_detail_auto_limit',    '10'),
             ('free_detail_auto_limit',     '20'),
+            ('max_crawl_hours',              '12'),
         ]
         for k, v in defaults:
             cur.execute("INSERT INTO admin_config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING", (k, v))
@@ -207,9 +212,19 @@ def update_user_custom_detail_limit(user_id: int, limit):
         cur = conn.cursor()
         cur.execute("UPDATE users SET custom_detail_limit = %s WHERE user_id = %s", (limit, user_id))
 
+def update_user_custom_detail_manual_limit(user_id: int, limit):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET custom_detail_manual_limit = %s WHERE user_id = %s", (limit, user_id))
+
+def update_user_custom_detail_auto_limit(user_id: int, limit):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET custom_detail_auto_limit = %s WHERE user_id = %s", (limit, user_id))
+
 def add_user_bonus(user_id: int, bonus_type: str, amount: int):
-    """bonus_type: 'manual_crawl_bonus' | 'briefing_bonus' | 'detail_bonus'"""
-    allowed = {'manual_crawl_bonus', 'briefing_bonus', 'detail_bonus'}
+    """bonus_type: 'manual_crawl_bonus' | 'briefing_bonus' | 'manual_detail_bonus' | 'auto_detail_bonus'"""
+    allowed = {'manual_crawl_bonus', 'briefing_bonus', 'manual_detail_bonus', 'auto_detail_bonus'}
     if bonus_type not in allowed:
         return
     with get_conn() as conn:
@@ -220,7 +235,7 @@ def add_user_bonus(user_id: int, bonus_type: str, amount: int):
         )
 
 def reset_user_bonus(user_id: int, bonus_type: str):
-    allowed = {'manual_crawl_bonus', 'briefing_bonus', 'detail_bonus'}
+    allowed = {'manual_crawl_bonus', 'briefing_bonus', 'manual_detail_bonus', 'auto_detail_bonus'}
     if bonus_type not in allowed:
         return
     with get_conn() as conn:
@@ -234,9 +249,11 @@ def get_all_users():
             SELECT user_id, email, role, is_active, created_at, last_login,
                    notion_db_id,
                    custom_weekly_limit, custom_briefing_limit, custom_detail_limit,
-                   COALESCE(manual_crawl_bonus, 0) AS manual_crawl_bonus,
-                   COALESCE(briefing_bonus, 0)     AS briefing_bonus,
-                   COALESCE(detail_bonus, 0)       AS detail_bonus,
+                   custom_detail_manual_limit, custom_detail_auto_limit,
+                   COALESCE(manual_crawl_bonus, 0)   AS manual_crawl_bonus,
+                   COALESCE(briefing_bonus, 0)       AS briefing_bonus,
+                   COALESCE(manual_detail_bonus, 0)  AS manual_detail_bonus,
+                   COALESCE(auto_detail_bonus, 0)    AS auto_detail_bonus,
                    CASE WHEN notion_token_enc IS NOT NULL THEN TRUE ELSE FALSE END AS notion_connected
             FROM users
             ORDER BY created_at DESC

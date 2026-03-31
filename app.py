@@ -261,26 +261,27 @@ def show_notion_setup_page(user_id: int):
             ---
             #### 1️⃣ 자동수집 뷰
             - 이름: `자동 수집`
-            - 필터 추가: `시간대` → `포함` → `자동`
-            - 필터 추가: `유형` → `기사`
-            - 그룹화: `시간대` (내림차순)
+            - **필터:** `유형` = `기사` + `시간대` **포함하지 않음** `수동`
+            - **그룹화:** `시간대` / 정렬: 알파벳 역순 / 빈 그룹 숨기기 ON
 
             #### 2️⃣ 수동수집 뷰
             - 이름: `수동 수집`
-            - 필터 추가: `시간대` → `포함` → `수동`
-            - 필터 추가: `유형` → `기사`
-            - 그룹화: `시간대` (내림차순)
+            - **필터:** `유형` = `기사` + `시간대` **포함** `수동`
+            - **그룹화:** `시간대` / 정렬: 알파벳 역순 / 빈 그룹 숨기기 ON
 
             #### 3️⃣ 브리핑 뷰
             - 이름: `브리핑`
-            - 필터 추가: `유형` → `브리핑`
+            - **필터:** `유형` = `브리핑`
+            - 그룹화 없음
 
             #### 4️⃣ 전체 뷰
             - 이름: `전체`
-            - 필터 없음
-            - 정렬: `날짜` 내림차순
+            - 필터 없음, 정렬: `날짜` 내림차순
 
             ---
+            **그룹화 설정 방법:**
+            필터 아이콘(≡) → 그룹화 → 그룹화 기준: `시간대` → 정렬: `알파벳 역순` → 빈 그룹 숨기기 ON
+
             > 💡 뷰 설정이 완료되면 아래 버튼을 눌러 시작하세요!
             """)
 
@@ -318,12 +319,6 @@ def _setup_notion_db(token: str, db_id: str) -> tuple:
         # 필요한 속성 정의
         props_to_add = {}
 
-        if "URL" not in existing:
-            props_to_add["URL"] = {"url": {}}
-
-        if "날짜" not in existing:
-            props_to_add["날짜"] = {"date": {}}
-
         if "상태" not in existing:
             props_to_add["상태"] = {
                 "status": {
@@ -335,8 +330,11 @@ def _setup_notion_db(token: str, db_id: str) -> tuple:
                 }
             }
 
-        if "요약" not in existing:
-            props_to_add["요약"] = {"rich_text": {}}
+        if "날짜" not in existing:
+            props_to_add["날짜"] = {"date": {}}
+
+        if "URL" not in existing:
+            props_to_add["URL"] = {"url": {}}
 
         if "시간대" not in existing:
             props_to_add["시간대"] = {"rich_text": {}}
@@ -490,54 +488,57 @@ def show_main_app():
             st.subheader("🤖 자동화 설정")
 
             if role == "trial":
-                st.warning("⚠️ 체험(trial) 계정은 자동화를 사용할 수 없습니다.")
-            else:
-                # 기본 스케줄 ON/OFF
-                new_auto_default = st.toggle(
-                    "🔒 기본 자동 수집 (오전 7시 · 오후 8시)",
-                    value=auto_enabled_default,
-                    help="매일 오전 7시, 오후 8시에 자동 수집합니다."
-                )
-                if new_auto_default != auto_enabled_default:
-                    auto_enabled_default = new_auto_default
-                    _save({"auto_enabled_default": auto_enabled_default})
-                    add_user_jobs(user_id, settings={**cfg,
-                        "auto_enabled_default": auto_enabled_default,
-                        "auto_enabled_custom": auto_enabled_custom,
-                        "custom_schedules": custom_schedules,
-                        "summary_mode_auto": summary_mode_auto})
-                    st.toast("✅ 기본 자동 수집 활성화!" if auto_enabled_default else "⏸ 기본 자동 수집 비활성화")
+                st.warning("⚠️ 체험(trial) 계정은 자동화 기능을 사용할 수 없습니다. 무료 플랜으로 업그레이드하세요.")
 
-                # 상태 표시
+            # 기본 스케줄 ON/OFF (trial은 disabled)
+            _auto_disabled = (role == "trial")
+            new_auto_default = st.toggle(
+                "🔒 기본 자동 수집 (오전 7시 · 오후 8시)",
+                value=auto_enabled_default,
+                help="매일 오전 7시, 오후 8시에 자동 수집합니다.",
+                disabled=_auto_disabled
+            )
+            if new_auto_default != auto_enabled_default and not _auto_disabled:
+                auto_enabled_default = new_auto_default
+                _save({"auto_enabled_default": auto_enabled_default})
+                add_user_jobs(user_id, settings={**cfg,
+                    "auto_enabled_default": auto_enabled_default,
+                    "auto_enabled_custom": auto_enabled_custom,
+                    "custom_schedules": custom_schedules,
+                    "summary_mode_auto": summary_mode_auto})
+                st.toast("✅ 기본 자동 수집 활성화!" if auto_enabled_default else "⏸ 기본 자동 수집 비활성화")
+
+            if not _auto_disabled:
                 if auto_enabled_default:
                     st.success("🟢 기본 자동 수집 활성화 중 (오전 7시 · 오후 8시)")
                 else:
                     st.warning("🔴 기본 자동 수집 비활성화")
 
-                # 커스텀 스케줄 ON/OFF
-                new_auto_custom = st.toggle(
-                    "⏰ 지정 시간 자동 수집",
-                    value=auto_enabled_custom,
-                    help="아래에서 설정한 추가 시간에 자동 수집합니다."
-                )
-                if new_auto_custom != auto_enabled_custom:
-                    auto_enabled_custom = new_auto_custom
-                    _save({"auto_enabled_custom": auto_enabled_custom})
-                    add_user_jobs(user_id, settings={**cfg,
-                        "auto_enabled_default": auto_enabled_default,
-                        "auto_enabled_custom": auto_enabled_custom,
-                        "custom_schedules": custom_schedules,
-                        "summary_mode_auto": summary_mode_auto})
-                    st.toast("✅ 지정 시간 자동 수집 활성화!" if auto_enabled_custom else "⏸ 지정 시간 자동 수집 비활성화")
+            # 커스텀 스케줄 ON/OFF
+            new_auto_custom = st.toggle(
+                "⏰ 지정 시간 자동 수집",
+                value=auto_enabled_custom,
+                help="아래에서 설정한 추가 시간에 자동 수집합니다.",
+                disabled=_auto_disabled
+            )
+            if new_auto_custom != auto_enabled_custom and not _auto_disabled:
+                auto_enabled_custom = new_auto_custom
+                _save({"auto_enabled_custom": auto_enabled_custom})
+                add_user_jobs(user_id, settings={**cfg,
+                    "auto_enabled_default": auto_enabled_default,
+                    "auto_enabled_custom": auto_enabled_custom,
+                    "custom_schedules": custom_schedules,
+                    "summary_mode_auto": summary_mode_auto})
+                st.toast("✅ 지정 시간 자동 수집 활성화!" if auto_enabled_custom else "⏸ 지정 시간 자동 수집 비활성화")
 
-                # 상태 표시
+            if not _auto_disabled:
                 if auto_enabled_custom:
                     st.success("🟢 지정 시간 자동 수집 활성화 중")
                 else:
                     st.warning("🔴 지정 시간 자동 수집 비활성화")
 
-                # 커스텀 스케줄 관리
-                with st.expander("⏰ 지정 시간 추가/관리"):
+            # 커스텀 스케줄 관리
+            with st.expander("⏰ 지정 시간 추가/관리"):
                     st.markdown("""
                     <div class="info-box">
                     💡 <b>수집 범위 안내</b><br>
@@ -571,7 +572,8 @@ def show_main_app():
                             with nc2:
                                 new_min   = st.number_input("분 (0~59)", min_value=0, max_value=59, value=0)
                             with nc3:
-                                new_range = st.number_input("수집 범위(시간)", min_value=1, max_value=24, value=5,
+                                _max_hours = int(get_admin_config("max_crawl_hours") or 12)
+                                new_range = st.number_input(f"수집 범위(시간, 최대 {_max_hours}h)", min_value=1, max_value=_max_hours, value=min(5, _max_hours),
                                                             help="실행 시각 기준 몇 시간 전부터 수집할지 설정")
                             with nc4:
                                 st.write("")
@@ -1184,16 +1186,19 @@ def show_admin_page():
 
                 st.divider()
 
-                # 개별 한도 설정
-                st.caption("**개별 한도 (0=기본값)**")
+                # 개별 한도 설정 (0=기본값, 개별설정 > 전체설정 우선)
+                st.caption("**개별 한도 설정** (0=전체 기본값 적용, 개별 설정이 전체보다 우선)")
+
                 cur_m = user.get("custom_weekly_limit")
-                m_input = st.number_input("수동 수집", min_value=0, max_value=500,
-                                          value=cur_m if cur_m is not None else 0, key=f"m_{uid}")
+                st.caption("기본 수동 수집 한도")
+                m_input = st.number_input("기본 수동 수집 (주간)", min_value=0, max_value=500,
+                                          value=cur_m if cur_m is not None else 0, key=f"m_{uid}",
+                                          label_visibility="collapsed")
                 mc1, mc2 = st.columns(2)
                 with mc1:
                     if st.button("저장", key=f"ms_{uid}"):
                         update_user_custom_limit(uid, m_input if m_input > 0 else None)
-                        st.toast("✅ 저장!")
+                        st.toast("✅ 기본 수동 수집 한도 저장!")
                         st.rerun()
                 with mc2:
                     if st.button("기본값", key=f"mr_{uid}"):
@@ -1201,29 +1206,57 @@ def show_admin_page():
                         st.toast("✅ 초기화!")
                         st.rerun()
 
-                cur_d = user.get("custom_detail_limit")
-                d_input = st.number_input("상세 요약", min_value=0, max_value=200,
-                                          value=cur_d if cur_d is not None else 0, key=f"d_{uid}")
-                dc1, dc2 = st.columns(2)
-                with dc1:
-                    if st.button("저장", key=f"ds_{uid}"):
-                        update_user_custom_detail_limit(uid, d_input if d_input > 0 else None)
-                        st.toast("✅ 저장!")
+                st.divider()
+                cur_dm = user.get("custom_detail_manual_limit")
+                st.caption("수동 상세 요약 한도")
+                dm_input = st.number_input("수동 상세 (주간)", min_value=0, max_value=200,
+                                           value=cur_dm if cur_dm is not None else 0, key=f"dm_{uid}",
+                                           label_visibility="collapsed")
+                dmc1, dmc2 = st.columns(2)
+                with dmc1:
+                    if st.button("저장", key=f"dms_{uid}"):
+                        from db import update_user_custom_detail_manual_limit
+                        update_user_custom_detail_manual_limit(uid, dm_input if dm_input > 0 else None)
+                        st.toast("✅ 수동 상세 한도 저장!")
                         st.rerun()
-                with dc2:
-                    if st.button("기본값", key=f"dr_{uid}"):
-                        update_user_custom_detail_limit(uid, None)
+                with dmc2:
+                    if st.button("기본값", key=f"dmr_{uid}"):
+                        from db import update_user_custom_detail_manual_limit
+                        update_user_custom_detail_manual_limit(uid, None)
                         st.toast("✅ 초기화!")
                         st.rerun()
 
+                st.divider()
+                cur_da = user.get("custom_detail_auto_limit")
+                st.caption("자동 상세 요약 한도")
+                da_input = st.number_input("자동 상세 (주간)", min_value=0, max_value=200,
+                                           value=cur_da if cur_da is not None else 0, key=f"da_{uid}",
+                                           label_visibility="collapsed")
+                dac1, dac2 = st.columns(2)
+                with dac1:
+                    if st.button("저장", key=f"das_{uid}"):
+                        from db import update_user_custom_detail_auto_limit
+                        update_user_custom_detail_auto_limit(uid, da_input if da_input > 0 else None)
+                        st.toast("✅ 자동 상세 한도 저장!")
+                        st.rerun()
+                with dac2:
+                    if st.button("기본값", key=f"dar_{uid}"):
+                        from db import update_user_custom_detail_auto_limit
+                        update_user_custom_detail_auto_limit(uid, None)
+                        st.toast("✅ 초기화!")
+                        st.rerun()
+
+                st.divider()
                 cur_b = user.get("custom_briefing_limit")
-                b_input = st.number_input("브리핑", min_value=0, max_value=100,
-                                          value=cur_b if cur_b is not None else 0, key=f"b_{uid}")
+                st.caption("브리핑 한도")
+                b_input = st.number_input("브리핑 (주간)", min_value=0, max_value=100,
+                                          value=cur_b if cur_b is not None else 0, key=f"b_{uid}",
+                                          label_visibility="collapsed")
                 bc1, bc2 = st.columns(2)
                 with bc1:
                     if st.button("저장", key=f"bs_{uid}"):
                         update_user_custom_briefing_limit(uid, b_input if b_input > 0 else None)
-                        st.toast("✅ 저장!")
+                        st.toast("✅ 브리핑 한도 저장!")
                         st.rerun()
                 with bc2:
                     if st.button("기본값", key=f"br_{uid}"):
@@ -1233,12 +1266,17 @@ def show_admin_page():
 
                 st.divider()
 
-                # 보너스 횟수 추가 (수정9 - 같은 주에 추가)
-                st.caption("**이번 주 보너스 추가**")
-                bonus_type = st.selectbox("항목", ["수동 수집", "브리핑", "상세 요약"], key=f"bt_{uid}")
+                # 이번 주 보너스 추가 (당주만 유효, 다음주 초기화)
+                st.caption("**이번 주 보너스 추가** (당주에만 적용, 다음주 자동 초기화)")
+                bonus_type = st.selectbox("항목", ["기본 수동 수집", "수동 상세 요약", "자동 상세 요약", "브리핑"], key=f"bt_{uid}")
                 bonus_amt  = st.number_input("추가 횟수", min_value=1, max_value=100, value=5, key=f"ba_{uid}")
                 if st.button("➕ 보너스 추가", key=f"badd_{uid}", use_container_width=True):
-                    type_map = {"수동 수집": "manual_crawl_bonus", "브리핑": "briefing_bonus", "상세 요약": "detail_bonus"}
+                    type_map = {
+                        "기본 수동 수집": "manual_crawl_bonus",
+                        "수동 상세 요약": "manual_detail_bonus",
+                        "자동 상세 요약": "auto_detail_bonus",
+                        "브리핑":         "briefing_bonus"
+                    }
                     add_user_bonus(uid, type_map[bonus_type], bonus_amt)
                     st.toast(f"✅ {user['email']} {bonus_type} +{bonus_amt}회 추가!")
                     st.rerun()
@@ -1259,7 +1297,11 @@ def show_admin_page():
     cur_trial_bd = int(get_admin_config("trial_briefing_det_limit") or 3)
     cur_free_bd  = int(get_admin_config("free_briefing_det_limit")  or 5)
 
-    st.markdown("**수동 수집 주간 한도**")
+    cur_max_hours = int(get_admin_config("max_crawl_hours") or 12)
+    st.markdown("**지정 시간 자동 수집 최대 범위 (시간)**")
+    new_max_hours = st.number_input("최대 수집 범위 (시간)", min_value=1, max_value=48, value=cur_max_hours, key="nmh")
+
+    st.markdown("**기본 수동 수집 주간 한도**")
     s1, s2 = st.columns(2)
     with s1: new_tm = st.number_input("체험", min_value=1, max_value=100,  value=cur_trial_m,  key="ntm")
     with s2: new_fm = st.number_input("무료", min_value=1, max_value=200,  value=cur_free_m,   key="nfm")
@@ -1285,6 +1327,7 @@ def show_admin_page():
     with bd2: new_fbd = st.number_input("무료", min_value=1, max_value=100, value=cur_free_bd,  key="nfbd")
 
     if st.button("💾 제한 설정 저장", type="primary"):
+        set_admin_config("max_crawl_hours",          str(new_max_hours))
         set_admin_config("trial_weekly_limit",       str(new_tm))
         set_admin_config("free_weekly_limit",        str(new_fm))
         set_admin_config("trial_detail_manual_limit", str(new_tdm))
