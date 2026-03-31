@@ -71,6 +71,14 @@ st.markdown("""
 
 
 # ─── 세션 복원 (쿠키 없음 - 수정7) ──────────────────────
+def _get_cookie_manager():
+    try:
+        import extra_streamlit_components as stx
+        return stx.CookieManager(key="ec_cookie_mgr")
+    except Exception:
+        return None
+
+
 def _restore_session():
     if st.session_state.get("logged_in"):
         sid = st.session_state.get("session_id")
@@ -81,12 +89,21 @@ def _restore_session():
     # 1) session_state 확인
     sid = st.session_state.get("session_id")
 
-    # 2) query_params에서 복원 (새로고침 후)
+    # 2) query_params에서 복원 (새로고침)
     if not sid:
         try:
             sid = st.query_params.get("sid")
         except Exception:
             sid = None
+
+    # 3) 쿠키에서 복원 (창 닫고 재접속)
+    if not sid:
+        cm = _get_cookie_manager()
+        if cm:
+            try:
+                sid = cm.get("ec_session_id")
+            except Exception:
+                sid = None
 
     if not sid:
         return
@@ -106,7 +123,11 @@ def _restore_session():
             except Exception:
                 pass
     else:
-        # 세션 만료 시 query_params 정리
+        # 세션 만료 시 쿠키·query_params 정리
+        cm = _get_cookie_manager()
+        if cm:
+            try: cm.delete("ec_session_id")
+            except Exception: pass
         try:
             st.query_params.clear()
         except Exception:
@@ -120,6 +141,11 @@ def _do_logout():
     sid = st.session_state.get("session_id")
     if sid:
         logout(sid)
+    # 쿠키 삭제
+    cm = _get_cookie_manager()
+    if cm:
+        try: cm.delete("ec_session_id")
+        except Exception: pass
     for k in ["user_id", "email", "logged_in", "session_id", "role"]:
         st.session_state.pop(k, None)
     try:
@@ -155,9 +181,10 @@ def show_auth_page():
 
         with t_login:
             with st.form("login_form"):
-                email    = st.text_input("이메일", placeholder="example@email.com")
-                password = st.text_input("비밀번호", type="password")
-                ok_btn   = st.form_submit_button("로그인", use_container_width=True, type="primary")
+                email       = st.text_input("이메일", placeholder="example@email.com")
+                password    = st.text_input("비밀번호", type="password")
+                keep_login  = st.checkbox("🔒 로그인 상태 유지 (7일간 유지, 공용 PC에서는 사용 금지)")
+                ok_btn      = st.form_submit_button("로그인", use_container_width=True, type="primary")
             if ok_btn:
                 if not email or not password:
                     st.error("이메일과 비밀번호를 입력해주세요.")
@@ -175,6 +202,19 @@ def show_auth_page():
                             st.query_params["sid"] = result
                         except Exception:
                             pass
+                        # 로그인 유지 체크 시 쿠키에 저장 (7일)
+                        if keep_login:
+                            cm = _get_cookie_manager()
+                            if cm:
+                                try:
+                                    expires = datetime.now() + timedelta(days=7)
+                                    cm.set("ec_session_id", result, expires_at=expires)
+                                except Exception:
+                                    pass
+                            # DB 세션도 7일로 연장
+                            from db import extend_session as _ext
+                            _ext(result, minutes=60*24*7)
+                            st.success("✅ 7일간 로그인이 유지됩니다.")
                         st.rerun()
                     else:
                         st.error(f"❌ {result}")
@@ -490,6 +530,29 @@ def show_main_app():
 
         if st.button("로그아웃", use_container_width=True):
             _do_logout()
+
+    # 세션 즉시 만료 버튼 (로그인 유지 중인 경우)
+    cm = _get_cookie_manager()
+    has_cookie = False
+    if cm:
+        try:
+            has_cookie = bool(cm.get("ec_session_id"))
+        except Exception:
+            pass
+    if has_cookie:
+        st.caption("🔒 로그인 유지 중")
+        if st.button("⚠️ 이 기기 로그인 즉시 만료", use_container_width=True):
+            if cm:
+                try: cm.delete("ec_session_id")
+                except Exception: pass
+            sid = st.session_state.get("session_id")
+            if sid:
+                logout(sid)
+            for k in ["user_id","email","logged_in","session_id","role"]:
+                st.session_state.pop(k, None)
+            try: st.query_params.clear()
+            except Exception: pass
+            st.rerun()
 
     if st.session_state.get("confirm_notion_reset"):
         st.warning("⚠️ Notion 연결을 해제하시겠습니까? 다시 설정해야 합니다.")
