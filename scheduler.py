@@ -200,6 +200,25 @@ def remove_user_jobs(user_id: int):
             scheduler.remove_job(jid)
 
 
+def _weekly_bonus_reset_job():
+    """매주 월요일 KST 00:05 보너스 리셋"""
+    from db import reset_weekly_bonuses
+    try:
+        reset_weekly_bonuses()
+    except Exception as e:
+        print(f"[보너스 리셋] 오류: {e}")
+
+
+def _daily_session_cleanup_job():
+    """매일 새벽 3시 KST 만료 세션 정리"""
+    from db import cleanup_expired_sessions
+    try:
+        cleanup_expired_sessions()
+        print("✅ 만료 세션 정리 완료")
+    except Exception as e:
+        print(f"[세션 정리] 오류: {e}")
+
+
 def sync_all_user_jobs():
     from db import get_conn, get_settings
     import psycopg2.extras
@@ -218,5 +237,19 @@ def sync_all_user_jobs():
             settings = get_settings(row["user_id"])
             add_user_jobs(row["user_id"], settings=settings)
         print(f"✅ 자동화 유저 {len(rows)}명 스케줄 복원")
+
+        # 시스템 job 등록 (보너스 리셋, 세션 정리)
+        scheduler = get_scheduler()
+        scheduler.add_job(
+            _weekly_bonus_reset_job,
+            trigger=CronTrigger(day_of_week='mon', hour=0, minute=5, timezone=KST),
+            id="system_bonus_reset", replace_existing=True,
+        )
+        scheduler.add_job(
+            _daily_session_cleanup_job,
+            trigger=CronTrigger(hour=3, minute=0, timezone=KST),
+            id="system_session_cleanup", replace_existing=True,
+        )
+        print("✅ 시스템 job 등록 (보너스 리셋, 세션 정리)")
     except Exception as e:
         print(f"스케줄 복원 실패: {e}")

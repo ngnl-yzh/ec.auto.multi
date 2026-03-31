@@ -3,12 +3,30 @@ import psycopg2
 import psycopg2.extras
 import json
 from contextlib import contextmanager
+from psycopg2 import pool as pg_pool
+import threading
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
+# ─── 커넥션 풀 (최소 2, 최대 10) ────────────────────────
+_pool = None
+_pool_lock = threading.Lock()
+
+def get_pool():
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                _pool = pg_pool.ThreadedConnectionPool(
+                    minconn=2, maxconn=10,
+                    dsn=DATABASE_URL, sslmode="require"
+                )
+    return _pool
+
 @contextmanager
 def get_conn():
-    conn = psycopg2.connect(DATABASE_URL, sslmode="require")
+    p = get_pool()
+    conn = p.getconn()
     try:
         yield conn
         conn.commit()
@@ -16,7 +34,7 @@ def get_conn():
         conn.rollback()
         raise
     finally:
-        conn.close()
+        p.putconn(conn)
 
 def init_db():
     with get_conn() as conn:
@@ -78,15 +96,16 @@ def init_db():
             CREATE TABLE IF NOT EXISTS detail_crawl_log (
                 id         SERIAL PRIMARY KEY,
                 user_id    INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                crawl_type TEXT    DEFAULT 'manual',
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS briefing_log (
-                id              SERIAL PRIMARY KEY,
-                user_id         INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                briefing_mode   TEXT DEFAULT 'standard',
-                created_at      TIMESTAMP DEFAULT NOW()
+                id            SERIAL PRIMARY KEY,
+                user_id       INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                briefing_mode TEXT DEFAULT 'standard',
+                created_at    TIMESTAMP DEFAULT NOW()
             )
         """)
         cur.execute("""
@@ -102,73 +121,100 @@ def init_db():
                 value TEXT NOT NULL
             )
         """)
-        cur.exec
 
-        # 마이그레이션 (기존 컬럼 호환)
+        # ─── 마이그레이션 ──────────────────────────────────
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'trial'")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_weekly_limit INTEGER DEFAULT NULL")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_briefing_limit INTEGER DEFAULT NULL")
-        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_detail_limit INTEGER DEFAULT NULL")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_detail_manual_limit INTEGER DEFAULT NULL")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_detail_auto_limit INTEGER DEFAULT NULL")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_schedule_limit INTEGER DEFAULT NULL")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_schedule_change_limit INTEGER DEFAULT NULL")
-        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS schedule_change_bonus INTEGER DEFAULT 0")
-        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS schedule_slot_bonus INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS manual_crawl_bonus INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS briefing_bonus INTEGER DEFAULT 0")
-        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS detail_bonus INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS manual_detail_bonus INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS auto_detail_bonus INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS schedule_change_bonus INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS schedule_slot_bonus INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS bonus_reset_week TEXT DEFAULT NULL")
 
-        # user_settings 마이그레이션
         cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS summary_mode_auto TEXT DEFAULT 'standard'")
         cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS summary_mode_manual TEXT DEFAULT 'standard'")
         cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS auto_enabled_default BOOLEAN DEFAULT FALSE")
-        # 구버전 auto_enabled -> auto_enabled_default 자동 이전
-        cur.execute("""
-            UPDATE user_settings
-            SET auto_enabled_default = auto_enabled
-            WHERE auto_enabled_default = FALSE
-              AND auto_enabled = TRUE
-        """)
         cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS auto_enabled_custom BOOLEAN DEFAULT FALSE")
-        cur.execute("""ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS custom_schedules JSONB DEFAULT '[]'""")
-        # briefing_log에 mode 컬럼 추가
+        cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS custom_schedules JSONB DEFAULT '[]'")
         cur.execute("ALTER TABLE briefing_log ADD COLUMN IF NOT EXISTS briefing_mode TEXT DEFAULT 'standard'")
         cur.execute("ALTER TABLE detail_crawl_log ADD COLUMN IF NOT EXISTS crawl_type TEXT DEFAULT 'manual'")
 
-        # 인덱스
+        # auto_enabled -> auto_enabled_default 마이그레이션
+        cur.execute("""
+            UPDATE user_settings
+            SET auto_enabled_default = auto_enabled
+            WHERE auto_enabled_default = FALSE AND auto_enabled = TRUE
+        """)
+
+        # ─── 인덱스 ────────────────────────────────────────
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_login_attempts_email ON login_attempts(email, attempted_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_crawl_log_user ON manual_crawl_log(user_id, created_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_detail_log_user ON detail_crawl_log(user_id, created_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_briefing_log_user ON briefing_log(user_id, created_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_schedule_change_user ON schedule_change_log(user_id, created_at)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_schedule_change_user ON schedule_change_log(user_id, created_at)")
 
-        # 기본 설정값
+        # ─── admin_config 기본값 ───────────────────────────
         defaults = [
-            ('trial_weekly_limit',        '15'),
-            ('free_weekly_limit',         '30'),
-            ('trial_briefing_std_limit',  '5'),
-            ('free_briefing_std_limit',   '10'),
-            ('trial_briefing_det_limit',  '3'),
-            ('free_briefing_det_limit',   '5'),
-            ('trial_detail_manual_limit',  '10'),
-            ('free_detail_manual_limit',   '20'),
-            ('trial_detail_auto_limit',    '10'),
-            ('free_detail_auto_limit',     '20'),
-            ('max_crawl_hours',              '12'),
+            ('trial_weekly_limit',           '15'),
+            ('free_weekly_limit',            '30'),
+            ('trial_briefing_std_limit',     '5'),
+            ('free_briefing_std_limit',      '10'),
+            ('trial_briefing_det_limit',     '3'),
+            ('free_briefing_det_limit',      '5'),
+            ('trial_detail_manual_limit',    '10'),
+            ('free_detail_manual_limit',     '20'),
+            ('trial_detail_auto_limit',      '10'),
+            ('free_detail_auto_limit',       '20'),
             ('trial_custom_schedule_limit',  '0'),
-            ('trial_schedule_change_limit',   '0'),
-            ('free_schedule_change_limit',    '4'),
             ('free_custom_schedule_limit',   '2'),
             ('trial_schedule_change_limit',  '0'),
             ('free_schedule_change_limit',   '4'),
+            ('max_crawl_hours',              '12'),
         ]
         for k, v in defaults:
-            cur.execute("INSERT INTO admin_config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING", (k, v))
+            cur.execute(
+                "INSERT INTO admin_config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING",
+                (k, v)
+            )
+
+
+# ─── 보너스 주간 리셋 ────────────────────────────────────
+def reset_weekly_bonuses():
+    """매주 월요일 KST 00:00 이후 첫 실행 시 모든 보너스 초기화"""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    KST = ZoneInfo('Asia/Seoul')
+    now_kst = datetime.now(KST)
+    # 현재 주 월요일 (ISO: 월=1)
+    week_start = now_kst.isocalendar()
+    current_week_key = f"{week_start.year}-W{week_start.week:02d}"
+
+    with get_conn() as conn:
+        cur = conn.cursor()
+        # bonus_reset_week가 현재 주와 다른 유저만 리셋
+        cur.execute("""
+            UPDATE users
+            SET manual_crawl_bonus   = 0,
+                briefing_bonus       = 0,
+                manual_detail_bonus  = 0,
+                auto_detail_bonus    = 0,
+                schedule_change_bonus = 0,
+                schedule_slot_bonus  = 0,
+                bonus_reset_week     = %s
+            WHERE bonus_reset_week IS DISTINCT FROM %s
+        """, (current_week_key, current_week_key))
+        count = cur.rowcount
+        if count > 0:
+            print(f"✅ 보너스 주간 리셋: {count}명 ({current_week_key})")
 
 
 # ─── 유저 ────────────────────────────────────────────────
@@ -227,11 +273,6 @@ def update_user_custom_briefing_limit(user_id: int, limit):
         cur = conn.cursor()
         cur.execute("UPDATE users SET custom_briefing_limit = %s WHERE user_id = %s", (limit, user_id))
 
-def update_user_custom_detail_limit(user_id: int, limit):
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("UPDATE users SET custom_detail_limit = %s WHERE user_id = %s", (limit, user_id))
-
 def update_user_custom_detail_manual_limit(user_id: int, limit):
     with get_conn() as conn:
         cur = conn.cursor()
@@ -252,39 +293,12 @@ def update_user_custom_schedule_change_limit(user_id: int, limit):
         cur = conn.cursor()
         cur.execute("UPDATE users SET custom_schedule_change_limit = %s WHERE user_id = %s", (limit, user_id))
 
-def record_schedule_change(user_id: int):
-    """커스텀 스케줄 추가 시 기록"""
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("INSERT INTO schedule_change_log (user_id) VALUES (%s)", (user_id,))
-
-def get_schedule_change_count(user_id: int, days: int = 28) -> int:
-    """최근 N일 내 스케줄 추가 횟수"""
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT COUNT(*) FROM schedule_change_log
-            WHERE user_id = %s
-              AND created_at > NOW() - INTERVAL '1 day' * %s
-        """, (user_id, days))
-        return cur.fetchone()[0]
-
-
-
-def get_recent_schedule_change_count(user_id: int, days: int = 28) -> int:
-    """최근 N일 내 지정 시간 추가 횟수"""
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT COUNT(*) FROM schedule_change_log
-            WHERE user_id = %s
-              AND created_at > NOW() - INTERVAL '1 day' * %s
-        """, (user_id, days))
-        return cur.fetchone()[0]
-
 def add_user_bonus(user_id: int, bonus_type: str, amount: int):
-    """bonus_type: 'manual_crawl_bonus' | 'briefing_bonus' | 'manual_detail_bonus' | 'auto_detail_bonus'"""
-    allowed = {'manual_crawl_bonus', 'briefing_bonus', 'manual_detail_bonus', 'auto_detail_bonus', 'schedule_change_bonus', 'schedule_slot_bonus'}
+    allowed = {
+        'manual_crawl_bonus', 'briefing_bonus',
+        'manual_detail_bonus', 'auto_detail_bonus',
+        'schedule_change_bonus', 'schedule_slot_bonus'
+    }
     if bonus_type not in allowed:
         return
     with get_conn() as conn:
@@ -294,13 +308,14 @@ def add_user_bonus(user_id: int, bonus_type: str, amount: int):
             (amount, user_id)
         )
 
-def reset_user_bonus(user_id: int, bonus_type: str):
-    allowed = {'manual_crawl_bonus', 'briefing_bonus', 'manual_detail_bonus', 'auto_detail_bonus', 'schedule_change_bonus', 'schedule_slot_bonus'}
-    if bonus_type not in allowed:
-        return
+def unlock_account(email: str):
+    """로그인 실패 기록 삭제 -> 잠금 해제"""
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute(f"UPDATE users SET {bonus_type} = 0 WHERE user_id = %s", (user_id,))
+        cur.execute(
+            "DELETE FROM login_attempts WHERE email = %s AND success = FALSE",
+            (email.lower().strip(),)
+        )
 
 def get_all_users():
     with get_conn() as conn:
@@ -308,13 +323,15 @@ def get_all_users():
         cur.execute("""
             SELECT user_id, email, role, is_active, created_at, last_login,
                    notion_db_id,
-                   custom_weekly_limit, custom_briefing_limit, custom_detail_limit,
-                   custom_detail_manual_limit, custom_detail_auto_limit, custom_schedule_limit,
-                   custom_schedule_change_limit, COALESCE(schedule_change_bonus,0) AS schedule_change_bonus, COALESCE(schedule_slot_bonus,0) AS schedule_slot_bonus,
-                   COALESCE(manual_crawl_bonus, 0)   AS manual_crawl_bonus,
-                   COALESCE(briefing_bonus, 0)       AS briefing_bonus,
-                   COALESCE(manual_detail_bonus, 0)  AS manual_detail_bonus,
-                   COALESCE(auto_detail_bonus, 0)    AS auto_detail_bonus,
+                   custom_weekly_limit, custom_briefing_limit,
+                   custom_detail_manual_limit, custom_detail_auto_limit,
+                   custom_schedule_limit, custom_schedule_change_limit,
+                   COALESCE(manual_crawl_bonus, 0)    AS manual_crawl_bonus,
+                   COALESCE(briefing_bonus, 0)         AS briefing_bonus,
+                   COALESCE(manual_detail_bonus, 0)    AS manual_detail_bonus,
+                   COALESCE(auto_detail_bonus, 0)      AS auto_detail_bonus,
+                   COALESCE(schedule_change_bonus, 0)  AS schedule_change_bonus,
+                   COALESCE(schedule_slot_bonus, 0)    AS schedule_slot_bonus,
                    CASE WHEN notion_token_enc IS NOT NULL THEN TRUE ELSE FALSE END AS notion_connected
             FROM users
             ORDER BY created_at DESC
@@ -342,6 +359,17 @@ def get_session(session_id: str):
             (session_id,)
         )
         return cur.fetchone()
+
+def extend_session(session_id: str, minutes: int = 30):
+    """세션 만료 시간 연장"""
+    from datetime import datetime, timedelta
+    new_expires = datetime.now() + timedelta(minutes=minutes)
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE sessions SET expires_at = %s WHERE session_id = %s",
+            (new_expires, session_id)
+        )
 
 def delete_session(session_id: str):
     with get_conn() as conn:
@@ -372,8 +400,7 @@ def is_account_locked(email: str, max_attempts: int = 5, window_minutes: int = 1
               AND success = FALSE
               AND attempted_at > NOW() - INTERVAL '1 minute' * %s
         """, (email.lower().strip(), window_minutes))
-        count = cur.fetchone()[0]
-        return count >= max_attempts
+        return cur.fetchone()[0] >= max_attempts
 
 def get_remaining_lockout_minutes(email: str, window_minutes: int = 15) -> int:
     with get_conn() as conn:
@@ -381,8 +408,7 @@ def get_remaining_lockout_minutes(email: str, window_minutes: int = 15) -> int:
         cur.execute("""
             SELECT attempted_at FROM login_attempts
             WHERE email = %s AND success = FALSE
-            ORDER BY attempted_at DESC
-            LIMIT 1
+            ORDER BY attempted_at DESC LIMIT 1
         """, (email.lower().strip(),))
         row = cur.fetchone()
         if not row:
@@ -414,13 +440,14 @@ def get_weekly_crawl_count(user_id: int) -> int:
 
 # ─── 상세 요약 횟수 ──────────────────────────────────────
 def record_detail_crawl(user_id: int, crawl_type: str = 'manual'):
-    """crawl_type: 'manual' | 'auto'"""
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("INSERT INTO detail_crawl_log (user_id, crawl_type) VALUES (%s, %s)", (user_id, crawl_type))
+        cur.execute(
+            "INSERT INTO detail_crawl_log (user_id, crawl_type) VALUES (%s, %s)",
+            (user_id, crawl_type)
+        )
 
 def get_weekly_detail_count(user_id: int, crawl_type: str = None) -> int:
-    """crawl_type=None이면 전체, 'manual'/'auto'이면 해당 타입만"""
     with get_conn() as conn:
         cur = conn.cursor()
         if crawl_type:
@@ -437,25 +464,17 @@ def get_weekly_detail_count(user_id: int, crawl_type: str = None) -> int:
             """, (user_id,))
         return cur.fetchone()[0]
 
-# 3. 계정 잠금 해제
-def unlock_account(email: str):
-    """로그인 실패 기록 삭제 -> 잠금 해제"""
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "DELETE FROM login_attempts WHERE email = %s AND success = FALSE",
-            (email.lower().strip(),)
-        )
-
 
 # ─── 브리핑 횟수 ─────────────────────────────────────────
 def record_briefing(user_id: int, mode: str = 'standard'):
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("INSERT INTO briefing_log (user_id, briefing_mode) VALUES (%s, %s)", (user_id, mode))
+        cur.execute(
+            "INSERT INTO briefing_log (user_id, briefing_mode) VALUES (%s, %s)",
+            (user_id, mode)
+        )
 
 def get_weekly_briefing_count(user_id: int, mode: str = None) -> int:
-    """mode=None이면 전체, mode='standard'/'detailed'이면 해당 모드만"""
     with get_conn() as conn:
         cur = conn.cursor()
         if mode:
@@ -470,6 +489,23 @@ def get_weekly_briefing_count(user_id: int, mode: str = None) -> int:
                 WHERE user_id = %s
                   AND created_at >= DATE_TRUNC('week', NOW() AT TIME ZONE 'Asia/Seoul') AT TIME ZONE 'Asia/Seoul'
             """, (user_id,))
+        return cur.fetchone()[0]
+
+
+# ─── 스케줄 변경 횟수 ────────────────────────────────────
+def record_schedule_change(user_id: int):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO schedule_change_log (user_id) VALUES (%s)", (user_id,))
+
+def get_schedule_change_count(user_id: int, days: int = 28) -> int:
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COUNT(*) FROM schedule_change_log
+            WHERE user_id = %s
+              AND created_at > NOW() - INTERVAL '1 day' * %s
+        """, (user_id, days))
         return cur.fetchone()[0]
 
 
@@ -498,24 +534,18 @@ def get_settings(user_id: int) -> dict:
         row = cur.fetchone()
         if row:
             d = dict(row)
-            # 구버전 호환: summary_mode -> summary_mode_auto/manual
             if not d.get('summary_mode_auto'):
-                d['summary_mode_auto']   = d.get('summary_mode', 'standard')
+                d['summary_mode_auto'] = d.get('summary_mode', 'standard')
             if not d.get('summary_mode_manual'):
                 d['summary_mode_manual'] = d.get('summary_mode', 'standard')
-            # 구버전 호환: auto_enabled -> auto_enabled_default
             if not d.get('auto_enabled_default') and d.get('auto_enabled'):
                 d['auto_enabled_default'] = True
             return d
         return {
-            "keywords": [],
-            "use_filter": False,
-            "summary_mode_auto": "standard",
-            "summary_mode_manual": "standard",
-            "enabled_sources": [],
-            "auto_enabled_default": False,
-            "auto_enabled_custom": False,
-            "custom_schedules": [],
+            "keywords": [], "use_filter": False,
+            "summary_mode_auto": "standard", "summary_mode_manual": "standard",
+            "enabled_sources": [], "auto_enabled_default": False,
+            "auto_enabled_custom": False, "custom_schedules": [],
         }
 
 def save_settings(user_id: int, settings: dict):

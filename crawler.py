@@ -13,12 +13,16 @@ KST = ZoneInfo('Asia/Seoul')
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
-# OpenAI 클라이언트 싱글턴 (매번 생성하면 성능 낭비)
+# OpenAI 클라이언트 싱글턴 (thread-safe)
+import threading as _threading
 _openai_client = None
+_openai_lock = _threading.Lock()
 def get_openai_client():
     global _openai_client
     if _openai_client is None:
-        _openai_client = OpenAI(api_key=OPENAI_API_KEY, http_client=httpx.Client())
+        with _openai_lock:
+            if _openai_client is None:
+                _openai_client = OpenAI(api_key=OPENAI_API_KEY, http_client=httpx.Client())
     return _openai_client
 
 # User-Agent 풀 (차단 방지)

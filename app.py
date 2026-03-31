@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 
 from db import (
     get_user_by_id, get_settings, save_settings,
+    extend_session, reset_weekly_bonuses,
     is_account_locked, update_user_custom_detail_manual_limit, update_user_custom_detail_auto_limit, update_user_custom_schedule_limit,
     unlock_account,
     record_schedule_change, get_schedule_change_count,
@@ -74,6 +75,10 @@ st.markdown("""
 # ─── 세션 복원 (쿠키 없음 - 수정7) ──────────────────────
 def _restore_session():
     if st.session_state.get("logged_in"):
+        # 이미 로그인된 경우 세션 연장
+        sid = st.session_state.get("session_id")
+        if sid:
+            extend_session(sid, minutes=30)
         return
     sid = st.session_state.get("session_id")
     if not sid:
@@ -87,6 +92,7 @@ def _restore_session():
                 email=user["email"], role=user.get("role", "trial"),
                 session_id=sid
             )
+            extend_session(sid, minutes=30)
 
 _restore_session()
 
@@ -481,13 +487,13 @@ def show_main_app():
         _det_bonus = (user_row.get("detail_bonus") or 0) if user_row else 0
 
         # 자동 상세 요약 한도
-        _auto_det_limit  = _get_limit(role, user_row, "trial_detail_auto_limit",   "free_detail_auto_limit",   "custom_detail_limit")
+        _auto_det_limit  = _get_limit(role, user_row, "trial_detail_auto_limit",   "free_detail_auto_limit",   "custom_detail_auto_limit")
         _auto_det_used   = get_weekly_detail_count(user_id, crawl_type="auto")
         _auto_det_total  = _auto_det_limit + _det_bonus
         _auto_det_remain = max(0, _auto_det_total - _auto_det_used)
 
         # 수동 상세 요약 한도
-        _manual_det_limit  = _get_limit(role, user_row, "trial_detail_manual_limit", "free_detail_manual_limit", "custom_detail_limit")
+        _manual_det_limit  = _get_limit(role, user_row, "trial_detail_manual_limit", "free_detail_manual_limit", "custom_detail_manual_limit")
         _manual_det_used   = get_weekly_detail_count(user_id, crawl_type="manual")
         _manual_det_total  = _manual_det_limit + _det_bonus
         _manual_det_remain = max(0, _manual_det_total - _manual_det_used)
@@ -583,9 +589,11 @@ def show_main_app():
                                     st.rerun()
 
                     # 지정 시간 추가 한도 (개수)
-                    _sch_limit  = _get_limit(role, user_row, "trial_custom_schedule_limit", "free_custom_schedule_limit", "custom_schedule_limit")
-                    _sch_used   = len(custom_schedules)
-                    _sch_remain = max(0, _sch_limit - _sch_used)
+                    _sch_base        = _get_limit(role, user_row, "trial_custom_schedule_limit", "free_custom_schedule_limit", "custom_schedule_limit")
+                    _sch_slot_bonus  = (user_row.get("schedule_slot_bonus") or 0) if user_row else 0
+                    _sch_limit       = _sch_base + _sch_slot_bonus
+                    _sch_used        = len(custom_schedules)
+                    _sch_remain      = max(0, _sch_limit - _sch_used)
 
                     # 28일 내 변경 횟수 제한 (free만)
                     _chg_limit  = _get_limit(role, user_row, "trial_schedule_change_limit", "free_schedule_change_limit", "custom_schedule_change_limit")
@@ -740,6 +748,9 @@ def show_main_app():
                     _btn_disabled = True
                 elif new_mode_manual == "detailed" and _manual_det_remain <= 0:
                     _btn_disabled = True
+            # trial은 기본 수동 수집 가능, 상세 요약은 불가
+            if role == "trial" and new_mode_manual == "detailed":
+                _btn_disabled = True
 
             # 수정1: 모드별 사용 횟수 표시
             if role != "admin":
