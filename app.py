@@ -230,10 +230,63 @@ def show_notion_setup_page(user_id: int):
                     with st.spinner("Notion 연결 확인 중..."):
                         if _test_notion(token, db_id):
                             update_notion_credentials(user_id, encrypt_token(token), db_id)
-                            st.success("✅ Notion 연결 완료!")
+                            # DB 속성 자동 추가
+                            with st.spinner("DB 속성 자동 설정 중..."):
+                                added, skipped, errors = _setup_notion_db(token, db_id)
+                            st.session_state["notion_setup_done"] = True
+                            st.session_state["notion_setup_added"] = added
+                            st.session_state["notion_setup_skipped"] = skipped
                             st.rerun()
                         else:
                             st.error("❌ 연결 실패. 토큰·DB ID 확인, DB에 Integration 연결 여부 확인해주세요.")
+
+        # 연결 완료 후 가이드 표시
+        if st.session_state.get("notion_setup_done"):
+            added   = st.session_state.get("notion_setup_added", [])
+            skipped = st.session_state.get("notion_setup_skipped", [])
+            st.success("✅ Notion 연결 및 DB 설정 완료!")
+            if added:
+                st.info(f"📝 자동 추가된 속성: {', '.join(added)}")
+            if skipped:
+                st.caption(f"이미 있는 속성 (건너뜀): {', '.join(skipped)}")
+
+            st.markdown("""
+            ---
+            ### 📋 뷰(View) 설정 가이드
+            속성은 자동으로 추가됐어요! 이제 Notion에서 뷰 4개만 직접 만들어주세요.
+
+            **뷰 만드는 방법:** DB 상단 `표 ∨` → `새 보기` → `표` 선택 → 이름 입력
+
+            ---
+            #### 1️⃣ 자동수집 뷰
+            - 이름: `자동 수집`
+            - 필터 추가: `시간대` → `포함` → `자동`
+            - 필터 추가: `유형` → `기사`
+            - 그룹화: `시간대` (내림차순)
+
+            #### 2️⃣ 수동수집 뷰
+            - 이름: `수동 수집`
+            - 필터 추가: `시간대` → `포함` → `수동`
+            - 필터 추가: `유형` → `기사`
+            - 그룹화: `시간대` (내림차순)
+
+            #### 3️⃣ 브리핑 뷰
+            - 이름: `브리핑`
+            - 필터 추가: `유형` → `브리핑`
+
+            #### 4️⃣ 전체 뷰
+            - 이름: `전체`
+            - 필터 없음
+            - 정렬: `날짜` 내림차순
+
+            ---
+            > 💡 뷰 설정이 완료되면 아래 버튼을 눌러 시작하세요!
+            """)
+
+            if st.button("🚀 시작하기", type="primary", use_container_width=True):
+                for k in ["notion_setup_done", "notion_setup_added", "notion_setup_skipped"]:
+                    st.session_state.pop(k, None)
+                st.rerun()
 
         st.divider()
         st.caption("💡 DB URL 예시: `https://notion.so/workspace/abc123...?v=xyz` → URL 그대로 붙여넣기")
@@ -246,6 +299,75 @@ def _test_notion(token: str, db_id: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _setup_notion_db(token: str, db_id: str) -> tuple:
+    """
+    Notion DB에 필수 속성 자동 추가.
+    반환: (추가된 속성 목록, 건너뜀 목록, 오류 목록)
+    """
+    try:
+        from notion_client import Client as NotionClient
+        notion = NotionClient(auth=token)
+
+        # 현재 DB 속성 조회
+        db_info = notion.databases.retrieve(database_id=db_id)
+        existing = set(db_info.get("properties", {}).keys())
+
+        # 필요한 속성 정의
+        props_to_add = {}
+
+        if "URL" not in existing:
+            props_to_add["URL"] = {"url": {}}
+
+        if "날짜" not in existing:
+            props_to_add["날짜"] = {"date": {}}
+
+        if "상태" not in existing:
+            props_to_add["상태"] = {
+                "status": {
+                    "options": [
+                        {"name": "읽기 전", "color": "red"},
+                        {"name": "읽는 중", "color": "yellow"},
+                        {"name": "읽음",   "color": "green"},
+                    ]
+                }
+            }
+
+        if "요약" not in existing:
+            props_to_add["요약"] = {"rich_text": {}}
+
+        if "시간대" not in existing:
+            props_to_add["시간대"] = {"rich_text": {}}
+
+        if "유형" not in existing:
+            props_to_add["유형"] = {
+                "select": {
+                    "options": [
+                        {"name": "기사",   "color": "blue"},
+                        {"name": "브리핑", "color": "purple"},
+                    ]
+                }
+            }
+
+        added   = list(props_to_add.keys())
+        skipped = [p for p in ["URL","날짜","상태","요약","시간대","유형"] if p in existing]
+        errors  = []
+
+        if props_to_add:
+            try:
+                notion.databases.update(
+                    database_id=db_id,
+                    properties=props_to_add
+                )
+            except Exception as e:
+                errors.append(str(e))
+                added = []
+
+        return added, skipped, errors
+
+    except Exception as e:
+        return [], [], [str(e)]
 
 
 # ════════════════════════════════════════════════════════
@@ -302,8 +424,23 @@ def show_main_app():
             if st.button("⚙️ Notion 재설정", use_container_width=True):
                 st.session_state["confirm_notion_reset"] = True
         with b2:
-            if st.button("로그아웃", use_container_width=True):
-                _do_logout()
+            if st.button("🔧 DB 속성 설정", use_container_width=True, help="Notion DB에 필수 속성을 자동으로 추가합니다"):
+                st.session_state["show_db_setup"] = True
+        
+        if st.session_state.get("show_db_setup"):
+            with st.spinner("DB 속성 설정 중..."):
+                added, skipped, errors = _setup_notion_db(notion_token, notion_db_id)
+            st.session_state.pop("show_db_setup", None)
+            if errors:
+                st.error(f"❌ 설정 실패: {errors[0]}")
+            else:
+                if added:
+                    st.toast(f"✅ 속성 추가 완료: {', '.join(added)}")
+                else:
+                    st.toast("✅ 모든 속성이 이미 설정되어 있습니다!")
+
+        if st.button("로그아웃", use_container_width=True):
+            _do_logout()
 
     if st.session_state.get("confirm_notion_reset"):
         st.warning("⚠️ Notion 연결을 해제하시겠습니까? 다시 설정해야 합니다.")
