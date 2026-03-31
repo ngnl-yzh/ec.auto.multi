@@ -462,14 +462,21 @@ def show_main_app():
     # TAB 1: 실행
     # ══════════════════════════════════════════════════════
     with tab1:
-        # 상세 요약 한도 (컬럼 밖에서 미리 계산)
-        _det_limit  = _get_limit(role, user_row, "trial_detail_limit", "free_detail_limit", "custom_detail_limit")
-        _det_used   = get_weekly_detail_count(user_id)
-        _det_bonus  = (user_row.get("detail_bonus") or 0) if user_row else 0
-        _det_total  = _det_limit + _det_bonus
-        _det_remain = max(0, _det_total - _det_used)
+        _det_bonus = (user_row.get("detail_bonus") or 0) if user_row else 0
 
-        # 수동 수집 한도 (컬럼 밖에서 미리 계산)
+        # 자동 상세 요약 한도
+        _auto_det_limit  = _get_limit(role, user_row, "trial_detail_auto_limit",   "free_detail_auto_limit",   "custom_detail_limit")
+        _auto_det_used   = get_weekly_detail_count(user_id, crawl_type="auto")
+        _auto_det_total  = _auto_det_limit + _det_bonus
+        _auto_det_remain = max(0, _auto_det_total - _auto_det_used)
+
+        # 수동 상세 요약 한도
+        _manual_det_limit  = _get_limit(role, user_row, "trial_detail_manual_limit", "free_detail_manual_limit", "custom_detail_limit")
+        _manual_det_used   = get_weekly_detail_count(user_id, crawl_type="manual")
+        _manual_det_total  = _manual_det_limit + _det_bonus
+        _manual_det_remain = max(0, _manual_det_total - _manual_det_used)
+
+        # 수동 수집 한도
         _m_limit  = _get_limit(role, user_row, "trial_weekly_limit", "free_weekly_limit", "custom_weekly_limit")
         _m_bonus  = (user_row.get("manual_crawl_bonus") or 0) if user_row else 0
         _m_total  = _m_limit + _m_bonus
@@ -594,9 +601,6 @@ def show_main_app():
             # ── 자동 수집 요약 모드 ────────────────────────
             st.subheader("📝 자동 수집 요약 모드")
 
-            if role != "admin":
-                st.markdown(f'<div class="limit-info">🔍 이번 주 상세 요약: <b>{_det_used} / {_det_total}회</b> (남은 횟수: <b>{_det_remain}회</b>)</div>', unsafe_allow_html=True)
-
             new_mode_auto = st.radio(
                 "자동수집_요약",
                 ["standard", "detailed"],
@@ -605,44 +609,72 @@ def show_main_app():
                 horizontal=True, label_visibility="collapsed",
                 key="auto_mode_radio"
             )
-            if new_mode_auto == "detailed" and role != "admin" and _det_remain <= 0:
-                st.warning("⚠️ 이번 주 상세 요약 횟수를 모두 사용했습니다. 기본 요약으로 전환됩니다.")
-                new_mode_auto = "standard"
+
+            if role != "admin":
+                if new_mode_auto == "standard":
+                    st.markdown("""<div class="mode-standard">
+                        <b>📄 기본 요약</b> — 핵심 요약 · 주요 내용 3가지 · 투자 시사점
+                    </div>""", unsafe_allow_html=True)
+                else:
+                    # 상세 한도 확인
+                    if _auto_det_remain <= 0:
+                        st.error(f"🔒 이번 주 자동 상세 요약 횟수를 모두 사용했습니다. ({_auto_det_total}회 소진)")
+                        new_mode_auto = "standard"
+                    else:
+                        st.markdown(f'<div class="limit-info">🔍 자동 상세 요약 남은 횟수: <b>{_auto_det_remain}회</b> ({_auto_det_used}/{_auto_det_total}회 사용)</div>', unsafe_allow_html=True)
+                        st.markdown("""<div class="mode-detailed">
+                            <b>🔍 상세 분석</b> — 핵심 요약 · 주요 내용 5가지 · 심층 분석 · 관련 기업/섹터
+                        </div>""", unsafe_allow_html=True)
+            else:
+                if new_mode_auto == "standard":
+                    st.markdown("""<div class="mode-standard"><b>📄 기본 요약</b></div>""", unsafe_allow_html=True)
+                else:
+                    st.markdown("""<div class="mode-detailed"><b>🔍 상세 분석</b></div>""", unsafe_allow_html=True)
 
             if new_mode_auto != summary_mode_auto:
                 summary_mode_auto = new_mode_auto
                 _save({"summary_mode_auto": summary_mode_auto})
                 st.toast("자동 수집 요약 모드 저장됨!")
 
-            if new_mode_auto == "standard":
-                st.markdown("""<div class="mode-standard">
-                    <b>📄 기본 요약</b> — 핵심 요약 · 주요 내용 3가지 · 투자 시사점
-                </div>""", unsafe_allow_html=True)
-            else:
-                st.markdown("""<div class="mode-detailed">
-                    <b>🔍 상세 분석</b> — 핵심 요약 · 주요 내용 5가지 · 심층 분석 · 관련 기업/섹터
-                </div>""", unsafe_allow_html=True)
-
         with right:
             # ── 수동 수집 ──────────────────────────────────
             st.subheader("▶ 수동 수집")
 
-            # 수동 수집 요약 모드
-            st.caption("수동 수집 요약 모드")
-            if role != "admin":
-                st.markdown(f'<div class="limit-info">🔍 이번 주 상세 요약: <b>{_det_used} / {_det_total}회</b> (남은: <b>{_det_remain}회</b>)</div>', unsafe_allow_html=True)
-
+            # 요약 모드 선택
             new_mode_manual = st.radio(
                 "수동수집_요약",
                 ["standard", "detailed"],
-                format_func=lambda x: "📄 기본" if x == "standard" else "🔍 상세",
+                format_func=lambda x: "📄 기본 요약" if x == "standard" else "🔍 상세 분석",
                 index=0 if summary_mode_manual == "standard" else 1,
                 horizontal=True, label_visibility="collapsed",
                 key="manual_mode_radio"
             )
-            if new_mode_manual == "detailed" and role != "admin" and _det_remain <= 0:
-                st.warning("⚠️ 상세 요약 횟수 소진. 기본 요약으로 전환됩니다.")
-                new_mode_manual = "standard"
+
+            # 수정3,5: 선택한 모드에 따라 해당 한도만 표시
+            if role != "admin":
+                if new_mode_manual == "standard":
+                    if _m_remain <= 0:
+                        st.error(f"🔒 이번 주 수동 기본 수집 횟수를 모두 사용했습니다. ({_m_total}회 소진)")
+                    else:
+                        st.markdown(
+                            f'<div class="limit-info">📄 수동 기본 수집 — 이번 주 <b>{_m_used}/{_m_total}회</b> 사용 · 남은 횟수: <b>{_m_remain}회</b></div>',
+                            unsafe_allow_html=True
+                        )
+                else:
+                    # 상세 선택 시 상세 한도 + 수동 횟수 모두 확인
+                    if _manual_det_remain <= 0:
+                        st.error(f"🔒 이번 주 수동 상세 요약 횟수를 모두 사용했습니다. ({_manual_det_total}회 소진)")
+                        new_mode_manual = "standard"
+                    elif _m_remain <= 0:
+                        st.error(f"🔒 이번 주 수동 수집 횟수를 모두 사용했습니다. ({_m_total}회 소진)")
+                    else:
+                        st.markdown(
+                            f'<div class="limit-info">'
+                            f'🔍 수동 상세 수집 — 수집 <b>{_m_used}/{_m_total}회</b> · 상세 요약 <b>{_manual_det_used}/{_manual_det_total}회</b> 사용<br>'
+                            f'&nbsp;&nbsp;&nbsp;남은 수집: <b>{_m_remain}회</b> · 남은 상세 요약: <b>{_manual_det_remain}회</b>'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
 
             if new_mode_manual != summary_mode_manual:
                 summary_mode_manual = new_mode_manual
@@ -658,27 +690,30 @@ def show_main_app():
             now_kst = datetime.now(ZoneInfo('Asia/Seoul')).replace(tzinfo=None)
             st.caption(f"📅 {(now_kst - timedelta(hours=sel_hours)).strftime('%m/%d %H:%M')} ~ {now_kst.strftime('%m/%d %H:%M')} (KST)")
 
-            if role != "admin":
-                st.markdown(f'<div class="limit-info">📊 이번 주 수동 수집: <b>{_m_used} / {_m_total}회</b> (남은: <b>{_m_remain}회</b>)</div>', unsafe_allow_html=True)
+            # 버튼 비활성화 조건: 수동 횟수 또는 상세 횟수 초과
+            _btn_disabled = False
+            if role in ["trial", "free"]:
+                if _m_remain <= 0:
+                    _btn_disabled = True
+                elif new_mode_manual == "detailed" and _manual_det_remain <= 0:
+                    _btn_disabled = True
 
             if st.button("📥 수동 수집 시작", use_container_width=True, type="primary",
-                         disabled=(role in ["trial", "free"] and _m_remain <= 0)):
+                         disabled=_btn_disabled):
                 if not notion_token or not notion_db_id:
                     st.error("❌ Notion 연결이 필요합니다.")
-                elif role in ["trial", "free"] and _m_remain <= 0:
-                    st.error(f"❌ 이번 주 수동 수집 횟수({_m_total}회)를 모두 사용했습니다.")
                 else:
                     with st.spinner(f"최근 {sel_range} 기사 수집 중..."):
                         saved, skipped = run_crawler(
                             notion_token=notion_token,
                             notion_db_id=notion_db_id,
                             settings=dict(keywords=keywords, use_filter=use_filter,
-                                          summary_mode=summary_mode_manual, enabled_sources=enabled_sources),
+                                          summary_mode=new_mode_manual, enabled_sources=enabled_sources),
                             time_label="수동", hours=sel_hours,
                         )
                     record_manual_crawl(user_id)
-                    if summary_mode_manual == "detailed":
-                        record_detail_crawl(user_id)
+                    if new_mode_manual == "detailed":
+                        record_detail_crawl(user_id, crawl_type="manual")
                     st.success(f"✅ 완료! {saved}개 저장, {skipped}개 중복 건너뜀")
 
             st.divider()

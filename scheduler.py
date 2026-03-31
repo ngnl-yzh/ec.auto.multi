@@ -119,11 +119,11 @@ def _crawl_job(user_id: int, hour: int, minute: int, job_type: str = "default"):
             user_email=user.get("email", ""),
         )
 
-        # 상세 요약 횟수 기록
+        # 자동 상세 요약 횟수 기록
         if summary_mode == "detailed" and saved > 0:
             from db import record_detail_crawl
             for _ in range(saved):
-                record_detail_crawl(user_id)
+                record_detail_crawl(user_id, crawl_type="auto")
         print(f"   ✅ 완료: {saved}개 저장, {skipped}개 중복 건너뜀")
     except Exception as e:
         print(f"[스케줄] 오류 user_id={user_id}: {e}")
