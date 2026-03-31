@@ -120,6 +120,7 @@ def init_db():
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_schedule_limit INTEGER DEFAULT NULL")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_schedule_change_limit INTEGER DEFAULT NULL")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS schedule_change_bonus INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS schedule_slot_bonus INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS manual_crawl_bonus INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS briefing_bonus INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS detail_bonus INTEGER DEFAULT 0")
@@ -294,7 +295,7 @@ def get_recent_schedule_change_count(user_id: int, days: int = 28) -> int:
 
 def add_user_bonus(user_id: int, bonus_type: str, amount: int):
     """bonus_type: 'manual_crawl_bonus' | 'briefing_bonus' | 'manual_detail_bonus' | 'auto_detail_bonus'"""
-    allowed = {'manual_crawl_bonus', 'briefing_bonus', 'manual_detail_bonus', 'auto_detail_bonus'}
+    allowed = {'manual_crawl_bonus', 'briefing_bonus', 'manual_detail_bonus', 'auto_detail_bonus', 'schedule_change_bonus', 'schedule_slot_bonus'}
     if bonus_type not in allowed:
         return
     with get_conn() as conn:
@@ -305,7 +306,7 @@ def add_user_bonus(user_id: int, bonus_type: str, amount: int):
         )
 
 def reset_user_bonus(user_id: int, bonus_type: str):
-    allowed = {'manual_crawl_bonus', 'briefing_bonus', 'manual_detail_bonus', 'auto_detail_bonus'}
+    allowed = {'manual_crawl_bonus', 'briefing_bonus', 'manual_detail_bonus', 'auto_detail_bonus', 'schedule_change_bonus', 'schedule_slot_bonus'}
     if bonus_type not in allowed:
         return
     with get_conn() as conn:
@@ -320,7 +321,7 @@ def get_all_users():
                    notion_db_id,
                    custom_weekly_limit, custom_briefing_limit, custom_detail_limit,
                    custom_detail_manual_limit, custom_detail_auto_limit, custom_schedule_limit,
-                   custom_schedule_change_limit, COALESCE(schedule_change_bonus,0) AS schedule_change_bonus,
+                   custom_schedule_change_limit, COALESCE(schedule_change_bonus,0) AS schedule_change_bonus, COALESCE(schedule_slot_bonus,0) AS schedule_slot_bonus,
                    COALESCE(manual_crawl_bonus, 0)   AS manual_crawl_bonus,
                    COALESCE(briefing_bonus, 0)       AS briefing_bonus,
                    COALESCE(manual_detail_bonus, 0)  AS manual_detail_bonus,
