@@ -102,13 +102,7 @@ def init_db():
                 value TEXT NOT NULL
             )
         """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS schedule_change_log (
-                id         SERIAL PRIMARY KEY,
-                user_id    INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
+        cur.exec
 
         # 마이그레이션 (기존 컬럼 호환)
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'trial'")
@@ -131,7 +125,7 @@ def init_db():
         cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS summary_mode_auto TEXT DEFAULT 'standard'")
         cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS summary_mode_manual TEXT DEFAULT 'standard'")
         cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS auto_enabled_default BOOLEAN DEFAULT FALSE")
-        # 구버전 auto_enabled → auto_enabled_default 자동 이전
+        # 구버전 auto_enabled -> auto_enabled_default 자동 이전
         cur.execute("""
             UPDATE user_settings
             SET auto_enabled_default = auto_enabled
@@ -276,11 +270,6 @@ def get_schedule_change_count(user_id: int, days: int = 28) -> int:
         return cur.fetchone()[0]
 
 
-def record_schedule_change(user_id: int):
-    """지정 시간 추가 행위 기록"""
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("INSERT INTO schedule_change_log (user_id) VALUES (%s)", (user_id,))
 
 def get_recent_schedule_change_count(user_id: int, days: int = 28) -> int:
     """최근 N일 내 지정 시간 추가 횟수"""
@@ -450,7 +439,7 @@ def get_weekly_detail_count(user_id: int, crawl_type: str = None) -> int:
 
 # 3. 계정 잠금 해제
 def unlock_account(email: str):
-    """로그인 실패 기록 삭제 → 잠금 해제"""
+    """로그인 실패 기록 삭제 -> 잠금 해제"""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -509,12 +498,12 @@ def get_settings(user_id: int) -> dict:
         row = cur.fetchone()
         if row:
             d = dict(row)
-            # 구버전 호환: summary_mode → summary_mode_auto/manual
+            # 구버전 호환: summary_mode -> summary_mode_auto/manual
             if not d.get('summary_mode_auto'):
                 d['summary_mode_auto']   = d.get('summary_mode', 'standard')
             if not d.get('summary_mode_manual'):
                 d['summary_mode_manual'] = d.get('summary_mode', 'standard')
-            # 구버전 호환: auto_enabled → auto_enabled_default
+            # 구버전 호환: auto_enabled -> auto_enabled_default
             if not d.get('auto_enabled_default') and d.get('auto_enabled'):
                 d['auto_enabled_default'] = True
             return d

@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 
 from db import (
     get_user_by_id, get_settings, save_settings,
+    is_account_locked, update_user_custom_detail_manual_limit, update_user_custom_detail_auto_limit, update_user_custom_schedule_limit,
     unlock_account,
     record_schedule_change, get_schedule_change_count,
     update_user_custom_schedule_change_limit,
@@ -1247,7 +1248,6 @@ def show_admin_page():
                 st.write(f"**마지막 로그인:** {_kst(user['last_login'])}")
                 st.write(f"**Notion 연결:** {'✅' if user['notion_connected'] else '❌'}")
                 # 잠금 여부 확인
-                from db import is_account_locked
                 is_locked = is_account_locked(user["email"])
                 if is_locked:
                     st.error("🔒 로그인 잠금 상태")
@@ -1312,13 +1312,11 @@ def show_admin_page():
                 dmc1, dmc2 = st.columns(2)
                 with dmc1:
                     if st.button("저장", key=f"dms_{uid}"):
-                        from db import update_user_custom_detail_manual_limit
                         update_user_custom_detail_manual_limit(uid, dm_input if dm_input > 0 else None)
                         st.toast("✅ 수동 상세 한도 저장!")
                         st.rerun()
                 with dmc2:
                     if st.button("기본값", key=f"dmr_{uid}"):
-                        from db import update_user_custom_detail_manual_limit
                         update_user_custom_detail_manual_limit(uid, None)
                         st.toast("✅ 초기화!")
                         st.rerun()
@@ -1332,13 +1330,11 @@ def show_admin_page():
                 dac1, dac2 = st.columns(2)
                 with dac1:
                     if st.button("저장", key=f"das_{uid}"):
-                        from db import update_user_custom_detail_auto_limit
                         update_user_custom_detail_auto_limit(uid, da_input if da_input > 0 else None)
                         st.toast("✅ 자동 상세 한도 저장!")
                         st.rerun()
                 with dac2:
                     if st.button("기본값", key=f"dar_{uid}"):
-                        from db import update_user_custom_detail_auto_limit
                         update_user_custom_detail_auto_limit(uid, None)
                         st.toast("✅ 초기화!")
                         st.rerun()
@@ -1354,13 +1350,11 @@ def show_admin_page():
                 sc1, sc2 = st.columns(2)
                 with sc1:
                     if st.button("저장", key=f"schs_{uid}"):
-                        from db import update_user_custom_schedule_limit
                         update_user_custom_schedule_limit(uid, sch_input if sch_input > 0 else None)
                         st.toast("✅ 저장! (다음 주 월요일 적용)")
                         st.rerun()
                 with sc2:
                     if st.button("기본값", key=f"schr_{uid}"):
-                        from db import update_user_custom_schedule_limit
                         update_user_custom_schedule_limit(uid, None)
                         st.toast("✅ 초기화!")
                         st.rerun()
@@ -1373,13 +1367,11 @@ def show_admin_page():
                 scc1, scc2 = st.columns(2)
                 with scc1:
                     if st.button("저장", key=f"schcs_{uid}"):
-                        from db import update_user_custom_schedule_change_limit
                         update_user_custom_schedule_change_limit(uid, schc_input if schc_input > 0 else None)
                         st.toast("✅ 저장! (다음 주 월요일 적용)")
                         st.rerun()
                 with scc2:
                     if st.button("기본값", key=f"schcr_{uid}"):
-                        from db import update_user_custom_schedule_change_limit
                         update_user_custom_schedule_change_limit(uid, None)
                         st.toast("✅ 초기화!")
                         st.rerun()
