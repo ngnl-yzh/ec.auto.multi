@@ -109,6 +109,13 @@ def init_db():
         cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS summary_mode_auto TEXT DEFAULT 'standard'")
         cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS summary_mode_manual TEXT DEFAULT 'standard'")
         cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS auto_enabled_default BOOLEAN DEFAULT FALSE")
+        # 구버전 auto_enabled → auto_enabled_default 자동 이전
+        cur.execute("""
+            UPDATE user_settings
+            SET auto_enabled_default = auto_enabled
+            WHERE auto_enabled_default = FALSE
+              AND auto_enabled = TRUE
+        """)
         cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS auto_enabled_custom BOOLEAN DEFAULT FALSE")
         cur.execute("""ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS custom_schedules JSONB DEFAULT '[]'""")
         # briefing_log에 mode 컬럼 추가
@@ -392,9 +399,13 @@ def get_settings(user_id: int) -> dict:
         if row:
             d = dict(row)
             # 구버전 호환: summary_mode → summary_mode_auto/manual
-            if 'summary_mode' in d and 'summary_mode_auto' not in d:
+            if not d.get('summary_mode_auto'):
                 d['summary_mode_auto']   = d.get('summary_mode', 'standard')
+            if not d.get('summary_mode_manual'):
                 d['summary_mode_manual'] = d.get('summary_mode', 'standard')
+            # 구버전 호환: auto_enabled → auto_enabled_default
+            if not d.get('auto_enabled_default') and d.get('auto_enabled'):
+                d['auto_enabled_default'] = True
             return d
         return {
             "keywords": [],
