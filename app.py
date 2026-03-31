@@ -4,12 +4,15 @@ from datetime import datetime, timedelta
 
 from db import (
     get_user_by_id, get_settings, save_settings,
-    update_notion_credentials, get_session, extend_session,
+    update_notion_credentials, get_session,
     get_all_users, update_user_role,
     record_manual_crawl, get_weekly_crawl_count,
+    record_detail_crawl, get_weekly_detail_count,
     record_briefing, get_weekly_briefing_count,
     get_admin_config, set_admin_config,
-    update_user_custom_limit, update_user_custom_briefing_limit
+    update_user_custom_limit, update_user_custom_briefing_limit,
+    update_user_custom_detail_limit,
+    add_user_bonus, reset_user_bonus
 )
 from auth import register, login, logout
 from security import encrypt_token, decrypt_token, validate_notion_token, extract_notion_db_id
@@ -55,41 +58,21 @@ st.markdown("""
     }
     .conn-ok  { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
     .conn-err { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
-    .limit-info { background: #f0f9ff; border-radius: 6px; padding: 6px 10px; font-size: 0.85rem; color: #0369a1; margin: 4px 0; }
+    .limit-info { background: #f0f9ff; border-radius: 6px; padding: 6px 10px;
+                  font-size: 0.85rem; color: #0369a1; margin: 4px 0; }
+    .info-box { background: #f0f9ff; border: 1px solid #bae6fd;
+                border-radius: 6px; padding: 8px 12px; font-size: 0.85rem; margin: 6px 0; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ─── 쿠키 기반 세션 복원 ────────────────────────────────
-def _get_cookie_manager():
-    try:
-        import extra_streamlit_components as stx
-        return stx.CookieManager(key="cookie_mgr")
-    except Exception:
-        return None
-
+# ─── 세션 복원 (쿠키 없음 - 수정7) ──────────────────────
 def _restore_session():
     if st.session_state.get("logged_in"):
-        sid = st.session_state.get("session_id")
-        if sid:
-            extend_session(sid, minutes=30)
         return
-
-    # 1) session_state에 session_id 있으면 복원 시도
     sid = st.session_state.get("session_id")
-
-    # 2) 없으면 쿠키에서 읽기
-    if not sid:
-        cm = _get_cookie_manager()
-        if cm:
-            try:
-                sid = cm.get("ec_session_id")
-            except Exception:
-                sid = None
-
     if not sid:
         return
-
     row = get_session(sid)
     if row:
         user = get_user_by_id(row["user_id"])
@@ -99,7 +82,6 @@ def _restore_session():
                 email=user["email"], role=user.get("role", "trial"),
                 session_id=sid
             )
-            extend_session(sid, minutes=30)
 
 _restore_session()
 
@@ -109,16 +91,21 @@ def _do_logout():
     sid = st.session_state.get("session_id")
     if sid:
         logout(sid)
-    # 쿠키 삭제
-    cm = _get_cookie_manager()
-    if cm:
-        try:
-            cm.delete("ec_session_id")
-        except Exception:
-            pass
     for k in ["user_id", "email", "logged_in", "session_id", "role"]:
         st.session_state.pop(k, None)
     st.rerun()
+
+
+# ─── 한도 계산 헬퍼 ──────────────────────────────────────
+def _get_limit(role, user_row, config_key_trial, config_key_free, custom_col):
+    if role == "admin":
+        return 99999
+    custom = user_row.get(custom_col) if user_row else None
+    if custom is not None:
+        return custom
+    if role == "trial":
+        return int(get_admin_config(config_key_trial) or 0)
+    return int(get_admin_config(config_key_free) or 0)
 
 
 # ════════════════════════════════════════════════════════
@@ -151,14 +138,6 @@ def show_auth_page():
                             role=user.get("role", "trial"),
                             logged_in=True
                         )
-                        # 쿠키에 세션 ID 저장 (30일)
-                        cm = _get_cookie_manager()
-                        if cm:
-                            try:
-                                from datetime import date
-                                cm.set("ec_session_id", result, expires_at=datetime.now() + timedelta(days=30))
-                            except Exception:
-                                pass
                         st.rerun()
                     else:
                         st.error(f"❌ {result}")
@@ -226,25 +205,17 @@ def show_notion_setup_page(user_id: int):
         st.markdown("""
         <div class="warn-box">
             ⚠️ <b>DB 속성 필수 항목</b><br>
-            <code>이름</code>(제목) &nbsp;·&nbsp; <code>URL</code>(URL) &nbsp;·&nbsp;
-            <code>날짜</code>(날짜) &nbsp;·&nbsp; <code>상태</code>(상태) &nbsp;·&nbsp;
-            <code>요약</code>(텍스트) &nbsp;·&nbsp; <code>시간대</code>(텍스트)
+            <code>이름</code>(제목) · <code>URL</code>(URL) · <code>날짜</code>(날짜) ·
+            <code>상태</code>(상태) · <code>요약</code>(텍스트) · <code>시간대</code>(텍스트)
         </div>
         """, unsafe_allow_html=True)
 
     with col_form:
         st.subheader("🔑 연결 정보 입력")
         with st.form("notion_form"):
-            token_input = st.text_input(
-                "Notion Integration 토큰",
-                placeholder="ntn_xxxxxxxxxxxxxxxxxxxx",
-                type="password"
-            )
-            db_input = st.text_input(
-                "Notion DB URL 또는 DB ID",
-                placeholder="https://notion.so/workspace/xxxxxxxx..."
-            )
-            save_btn = st.form_submit_button("✅ 연결 저장 및 테스트", use_container_width=True, type="primary")
+            token_input = st.text_input("Notion Integration 토큰", placeholder="ntn_xxxxxxxxxxxxxxxxxxxx", type="password")
+            db_input    = st.text_input("Notion DB URL 또는 DB ID", placeholder="https://notion.so/workspace/xxxxxxxx...")
+            save_btn    = st.form_submit_button("✅ 연결 저장 및 테스트", use_container_width=True, type="primary")
 
         if save_btn:
             token = token_input.strip()
@@ -283,6 +254,7 @@ def _test_notion(token: str, db_id: str) -> bool:
 def show_main_app():
     user_id  = st.session_state["user_id"]
     email    = st.session_state["email"]
+    role     = st.session_state.get("role", "trial")
     user_row = get_user_by_id(user_id)
 
     notion_token, notion_db_id = None, None
@@ -295,19 +267,26 @@ def show_main_app():
             except Exception:
                 pass
 
-    cfg              = get_settings(user_id)
-    keywords         = list(cfg.get("keywords") or [])
-    use_filter       = cfg.get("use_filter", False)
-    summary_mode     = cfg.get("summary_mode", "standard")
-    all_sources      = [s["name"] for s in NEWS_SOURCES]
-    enabled_sources  = list(cfg.get("enabled_sources") or all_sources)
-    auto_enabled     = cfg.get("auto_enabled", False)
-    custom_schedules = list(cfg.get("custom_schedules") or [])
+    cfg = get_settings(user_id)
+    keywords             = list(cfg.get("keywords") or [])
+    use_filter           = cfg.get("use_filter", False)
+    summary_mode_auto    = cfg.get("summary_mode_auto", "standard")
+    summary_mode_manual  = cfg.get("summary_mode_manual", "standard")
+    all_sources          = [s["name"] for s in NEWS_SOURCES]
+    enabled_sources      = list(cfg.get("enabled_sources") or all_sources)
+    auto_enabled_default = cfg.get("auto_enabled_default", False)
+    auto_enabled_custom  = cfg.get("auto_enabled_custom", False)
+    custom_schedules     = list(cfg.get("custom_schedules") or [])
 
     def _save(patch: dict):
-        base = dict(keywords=keywords, use_filter=use_filter,
-                    summary_mode=summary_mode, enabled_sources=enabled_sources,
-                    auto_enabled=auto_enabled, custom_schedules=custom_schedules)
+        base = dict(
+            keywords=keywords, use_filter=use_filter,
+            summary_mode_auto=summary_mode_auto, summary_mode_manual=summary_mode_manual,
+            enabled_sources=enabled_sources,
+            auto_enabled_default=auto_enabled_default,
+            auto_enabled_custom=auto_enabled_custom,
+            custom_schedules=custom_schedules
+        )
         base.update(patch)
         save_settings(user_id, base)
 
@@ -326,7 +305,6 @@ def show_main_app():
             if st.button("로그아웃", use_container_width=True):
                 _do_logout()
 
-    # Notion 재설정 확인 팝업
     if st.session_state.get("confirm_notion_reset"):
         st.warning("⚠️ Notion 연결을 해제하시겠습니까? 다시 설정해야 합니다.")
         cc1, cc2 = st.columns(2)
@@ -346,156 +324,216 @@ def show_main_app():
     # TAB 1: 실행
     # ══════════════════════════════════════════════════════
     with tab1:
+        # 상세 요약 한도 (컬럼 밖에서 미리 계산)
+        _det_limit  = _get_limit(role, user_row, "trial_detail_limit", "free_detail_limit", "custom_detail_limit")
+        _det_used   = get_weekly_detail_count(user_id)
+        _det_bonus  = (user_row.get("detail_bonus") or 0) if user_row else 0
+        _det_total  = _det_limit + _det_bonus
+        _det_remain = max(0, _det_total - _det_used)
+
+        # 수동 수집 한도 (컬럼 밖에서 미리 계산)
+        _m_limit  = _get_limit(role, user_row, "trial_weekly_limit", "free_weekly_limit", "custom_weekly_limit")
+        _m_bonus  = (user_row.get("manual_crawl_bonus") or 0) if user_row else 0
+        _m_total  = _m_limit + _m_bonus
+        _m_used   = get_weekly_crawl_count(user_id)
+        _m_remain = max(0, _m_total - _m_used)
+
         left, right = st.columns(2)
 
         with left:
-            st.subheader("📝 요약 모드")
-            new_mode = st.radio(
-                "요약",
-                ["standard", "detailed"],
-                format_func=lambda x: "📄 기본 요약" if x == "standard" else "🔍 상세 분석",
-                index=0 if summary_mode == "standard" else 1,
-                horizontal=True,
-                label_visibility="collapsed"
-            )
-            if new_mode == "standard":
-                st.markdown("""<div class="mode-standard">
-                    <b>📄 기본 요약</b> — 핵심 요약 · 주요 내용 3가지 · 투자 시사점<br>
-                    <small style="color:#666">빠르게 훑어보기에 적합</small>
-                </div>""", unsafe_allow_html=True)
-            else:
-                st.markdown("""<div class="mode-detailed">
-                    <b>🔍 상세 분석</b> — 핵심 요약 · 주요 내용 5가지 · 심층 분석 · 관련 기업/섹터<br>
-                    <small style="color:#666">깊이 있는 분석이 필요할 때</small>
-                </div>""", unsafe_allow_html=True)
-            if new_mode != summary_mode:
-                summary_mode = new_mode
-                _save({"summary_mode": summary_mode})
-                st.toast("요약 모드 저장됨!")
-
-            st.divider()
-            st.subheader("🕐 자동 실행 스케줄")
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown('<div class="schedule-box">🌅 <b>오전 7:00 KST</b><br>매일 자동 실행</div>', unsafe_allow_html=True)
-            with c2:
-                st.markdown('<div class="schedule-box">🌆 <b>오후 8:00 KST</b><br>매일 자동 실행</div>', unsafe_allow_html=True)
-
-        with right:
+            # ── 자동화 설정 ────────────────────────────────
             st.subheader("🤖 자동화 설정")
-            _role_auto = st.session_state.get("role", "trial")
-            if _role_auto == "trial":
-                st.warning("⚠️ 체험(trial) 계정은 자동화를 사용할 수 없습니다.")
-            new_auto = st.toggle("자동화 활성화 (매일 오전 7시 · 오후 8시)", value=auto_enabled, disabled=(_role_auto == "trial"))
-            if new_auto != auto_enabled:
-                auto_enabled = new_auto
-                _save({"auto_enabled": auto_enabled})
-                if new_auto:
-                    add_user_jobs(user_id, custom_schedules=custom_schedules)
-                    st.toast("✅ 자동화 활성화됨!")
-                else:
-                    remove_user_jobs(user_id)
-                    st.toast("⏸ 자동화 비활성화됨.")
 
-            # 커스텀 스케줄 설정
-            if _role_auto != "trial":
-                with st.expander("⏰ 자동 수집 시간 추가 설정"):
-                    st.caption("기본: 오전 7시, 오후 8시 (고정) · 추가 시간을 설정하세요 (최대 24시간 이내)")
-                    
-                    # 현재 커스텀 스케줄 표시
+            if role == "trial":
+                st.warning("⚠️ 체험(trial) 계정은 자동화를 사용할 수 없습니다.")
+            else:
+                # 기본 스케줄 ON/OFF
+                new_auto_default = st.toggle(
+                    "🔒 기본 자동 수집 (오전 7시 · 오후 8시)",
+                    value=auto_enabled_default,
+                    help="매일 오전 7시, 오후 8시에 자동 수집합니다."
+                )
+                if new_auto_default != auto_enabled_default:
+                    auto_enabled_default = new_auto_default
+                    _save({"auto_enabled_default": auto_enabled_default})
+                    add_user_jobs(user_id, settings={**cfg,
+                        "auto_enabled_default": auto_enabled_default,
+                        "auto_enabled_custom": auto_enabled_custom,
+                        "custom_schedules": custom_schedules,
+                        "summary_mode_auto": summary_mode_auto})
+                    st.toast("✅ 기본 자동 수집 활성화!" if auto_enabled_default else "⏸ 기본 자동 수집 비활성화")
+
+                # 커스텀 스케줄 ON/OFF
+                new_auto_custom = st.toggle(
+                    "⏰ 지정 시간 자동 수집",
+                    value=auto_enabled_custom,
+                    help="아래에서 설정한 추가 시간에 자동 수집합니다."
+                )
+                if new_auto_custom != auto_enabled_custom:
+                    auto_enabled_custom = new_auto_custom
+                    _save({"auto_enabled_custom": auto_enabled_custom})
+                    add_user_jobs(user_id, settings={**cfg,
+                        "auto_enabled_default": auto_enabled_default,
+                        "auto_enabled_custom": auto_enabled_custom,
+                        "custom_schedules": custom_schedules,
+                        "summary_mode_auto": summary_mode_auto})
+                    st.toast("✅ 지정 시간 자동 수집 활성화!" if auto_enabled_custom else "⏸ 지정 시간 자동 수집 비활성화")
+
+                # 커스텀 스케줄 관리
+                with st.expander("⏰ 지정 시간 추가/관리"):
+                    st.markdown("""
+                    <div class="info-box">
+                    💡 <b>수집 범위 안내</b><br>
+                    각 시간대의 수집 범위는 <b>이전 활성 시간대 ~ 현재 시간대</b>로 자동 계산됩니다.<br>
+                    기본 스케줄(7시·20시)과 시간이 겹쳐도 <b>중복된 기사는 URL로 자동 제외</b>됩니다.
+                    </div>
+                    """, unsafe_allow_html=True)
+
                     if custom_schedules:
-                        st.write("**현재 추가 스케줄:**")
+                        st.write("**현재 지정 스케줄:**")
                         for i, sch in enumerate(custom_schedules):
-                            sc1, sc2 = st.columns([3, 1])
+                            sc1, sc2 = st.columns([4, 1])
                             with sc1:
-                                r = sch.get("range_hours", 5)
-                                st.write(f"🕐 {sch['hour']:02d}:{sch['minute']:02d} KST — 최근 {r}시간 수집")
+                                r = sch.get("range_hours", "?")
+                                st.write(f"🕐 자동 {sch['hour']:02d}:{sch['minute']:02d} KST — 최근 {r}시간 수집")
                             with sc2:
                                 if st.button("삭제", key=f"del_sch_{i}"):
                                     custom_schedules.pop(i)
                                     _save({"custom_schedules": custom_schedules})
-                                    if auto_enabled:
-                                        add_user_jobs(user_id, custom_schedules=custom_schedules)
+                                    add_user_jobs(user_id, settings={**cfg,
+                                        "auto_enabled_default": auto_enabled_default,
+                                        "auto_enabled_custom": auto_enabled_custom,
+                                        "custom_schedules": custom_schedules})
                                     st.rerun()
 
-                    # 새 스케줄 추가
                     if len(custom_schedules) < 5:
                         with st.form("add_schedule_form"):
                             nc1, nc2, nc3, nc4 = st.columns([2, 2, 2, 1])
                             with nc1:
-                                new_hour = st.number_input("실행 시 (0~23)", min_value=0, max_value=23, value=12, key="new_sch_h")
+                                new_hour  = st.number_input("시 (0~23)", min_value=0, max_value=23, value=12)
                             with nc2:
-                                new_min = st.number_input("실행 분 (0~59)", min_value=0, max_value=59, value=0, key="new_sch_m")
+                                new_min   = st.number_input("분 (0~59)", min_value=0, max_value=59, value=0)
                             with nc3:
-                                new_range = st.number_input("수집 범위 (시간)", min_value=1, max_value=24, value=5, key="new_sch_r",
+                                new_range = st.number_input("수집 범위(시간)", min_value=1, max_value=24, value=5,
                                                             help="실행 시각 기준 몇 시간 전부터 수집할지 설정")
                             with nc4:
                                 st.write("")
                                 st.write("")
                                 add_btn = st.form_submit_button("➕", use_container_width=True)
                             if add_btn:
-                                is_default = (new_hour == 7 and new_min == 0) or (new_hour == 20 and new_min == 0)
                                 is_dup = any(s["hour"] == new_hour and s["minute"] == new_min for s in custom_schedules)
+                                is_default = (new_hour == 7 and new_min == 0) or (new_hour == 20 and new_min == 0)
                                 if is_default:
-                                    st.error("기본 스케줄과 중복됩니다.")
+                                    st.error("기본 스케줄(7시·20시)과 중복됩니다.")
                                 elif is_dup:
                                     st.error("이미 추가된 시간입니다.")
                                 else:
-                                    custom_schedules.append({"hour": new_hour, "minute": new_min, "range_hours": new_range})
+                                    custom_schedules.append({"hour": new_hour, "minute": new_min, "range_hours": new_range, "enabled": True})
                                     _save({"custom_schedules": custom_schedules})
-                                    if auto_enabled:
-                                        add_user_jobs(user_id, custom_schedules=custom_schedules)
-                                    st.toast(f"✅ {new_hour:02d}:{new_min:02d} (최근 {new_range}시간) 스케줄 추가!")
+                                    add_user_jobs(user_id, settings={**cfg,
+                                        "auto_enabled_default": auto_enabled_default,
+                                        "auto_enabled_custom": auto_enabled_custom,
+                                        "custom_schedules": custom_schedules})
+                                    st.toast(f"✅ 자동 {new_hour:02d}:{new_min:02d} (최근 {new_range}시간) 추가!")
                                     st.rerun()
                     else:
                         st.caption("최대 5개까지 추가 가능합니다.")
 
             st.divider()
+
+            # ── 자동 수집 요약 모드 ────────────────────────
+            st.subheader("📝 자동 수집 요약 모드")
+
+            if role != "admin":
+                st.markdown(f'<div class="limit-info">🔍 이번 주 상세 요약: <b>{_det_used} / {_det_total}회</b> (남은 횟수: <b>{_det_remain}회</b>)</div>', unsafe_allow_html=True)
+
+            new_mode_auto = st.radio(
+                "자동수집_요약",
+                ["standard", "detailed"],
+                format_func=lambda x: "📄 기본 요약" if x == "standard" else "🔍 상세 분석",
+                index=0 if summary_mode_auto == "standard" else 1,
+                horizontal=True, label_visibility="collapsed",
+                key="auto_mode_radio"
+            )
+            if new_mode_auto == "detailed" and role != "admin" and _det_remain <= 0:
+                st.warning("⚠️ 이번 주 상세 요약 횟수를 모두 사용했습니다. 기본 요약으로 전환됩니다.")
+                new_mode_auto = "standard"
+
+            if new_mode_auto != summary_mode_auto:
+                summary_mode_auto = new_mode_auto
+                _save({"summary_mode_auto": summary_mode_auto})
+                st.toast("자동 수집 요약 모드 저장됨!")
+
+            if new_mode_auto == "standard":
+                st.markdown("""<div class="mode-standard">
+                    <b>📄 기본 요약</b> — 핵심 요약 · 주요 내용 3가지 · 투자 시사점
+                </div>""", unsafe_allow_html=True)
+            else:
+                st.markdown("""<div class="mode-detailed">
+                    <b>🔍 상세 분석</b> — 핵심 요약 · 주요 내용 5가지 · 심층 분석 · 관련 기업/섹터
+                </div>""", unsafe_allow_html=True)
+
+        with right:
+            # ── 수동 수집 ──────────────────────────────────
             st.subheader("▶ 수동 수집")
+
+            # 수동 수집 요약 모드
+            st.caption("수동 수집 요약 모드")
+            if role != "admin":
+                st.markdown(f'<div class="limit-info">🔍 이번 주 상세 요약: <b>{_det_used} / {_det_total}회</b> (남은: <b>{_det_remain}회</b>)</div>', unsafe_allow_html=True)
+
+            new_mode_manual = st.radio(
+                "수동수집_요약",
+                ["standard", "detailed"],
+                format_func=lambda x: "📄 기본" if x == "standard" else "🔍 상세",
+                index=0 if summary_mode_manual == "standard" else 1,
+                horizontal=True, label_visibility="collapsed",
+                key="manual_mode_radio"
+            )
+            if new_mode_manual == "detailed" and role != "admin" and _det_remain <= 0:
+                st.warning("⚠️ 상세 요약 횟수 소진. 기본 요약으로 전환됩니다.")
+                new_mode_manual = "standard"
+
+            if new_mode_manual != summary_mode_manual:
+                summary_mode_manual = new_mode_manual
+                _save({"summary_mode_manual": summary_mode_manual})
+                st.toast("수동 수집 요약 모드 저장됨!")
+
+            st.divider()
+
             hour_map = {"1시간":1,"3시간":3,"6시간":6,"12시간":12,"24시간":24,"36시간":36,"48시간":48}
             sel_range = st.select_slider("수집 범위", options=list(hour_map.keys()), value="6시간")
             sel_hours = hour_map[sel_range]
             from zoneinfo import ZoneInfo
-            now = datetime.now(ZoneInfo('Asia/Seoul')).replace(tzinfo=None)
-            st.caption(f"📅 {(now - timedelta(hours=sel_hours)).strftime('%m/%d %H:%M')} ~ {now.strftime('%m/%d %H:%M')} (KST)")
+            now_kst = datetime.now(ZoneInfo('Asia/Seoul')).replace(tzinfo=None)
+            st.caption(f"📅 {(now_kst - timedelta(hours=sel_hours)).strftime('%m/%d %H:%M')} ~ {now_kst.strftime('%m/%d %H:%M')} (KST)")
 
-            _role = st.session_state.get("role", "trial")
-            _user_row = get_user_by_id(user_id)
-            _custom_limit = _user_row.get("custom_weekly_limit") if _user_row else None
-            if _role == "admin":
-                _limit = 99999
-            elif _custom_limit is not None:
-                _limit = _custom_limit
-            elif _role == "trial":
-                _limit = int(get_admin_config("trial_weekly_limit") or 15)
-            else:
-                _limit = int(get_admin_config("free_weekly_limit") or 30)
-
-            _used = get_weekly_crawl_count(user_id)
-            _remaining = max(0, _limit - _used)
-
-            if _role != "admin":
-                st.markdown(f'<div class="limit-info">📊 이번 주 수동 수집: <b>{_used} / {_limit}회</b> (남은 횟수: <b>{_remaining}회</b>)</div>', unsafe_allow_html=True)
+            if role != "admin":
+                st.markdown(f'<div class="limit-info">📊 이번 주 수동 수집: <b>{_m_used} / {_m_total}회</b> (남은: <b>{_m_remain}회</b>)</div>', unsafe_allow_html=True)
 
             if st.button("📥 수동 수집 시작", use_container_width=True, type="primary",
-                         disabled=(_role in ["trial", "free"] and _remaining <= 0)):
+                         disabled=(role in ["trial", "free"] and _m_remain <= 0)):
                 if not notion_token or not notion_db_id:
                     st.error("❌ Notion 연결이 필요합니다.")
-                elif _role in ["trial", "free"] and _remaining <= 0:
-                    st.error(f"❌ 이번 주 수동 수집 횟수({_limit}회)를 모두 사용했습니다.")
+                elif role in ["trial", "free"] and _m_remain <= 0:
+                    st.error(f"❌ 이번 주 수동 수집 횟수({_m_total}회)를 모두 사용했습니다.")
                 else:
                     with st.spinner(f"최근 {sel_range} 기사 수집 중..."):
                         saved, skipped = run_crawler(
                             notion_token=notion_token,
                             notion_db_id=notion_db_id,
                             settings=dict(keywords=keywords, use_filter=use_filter,
-                                          summary_mode=summary_mode, enabled_sources=enabled_sources),
+                                          summary_mode=summary_mode_manual, enabled_sources=enabled_sources),
                             time_label="수동", hours=sel_hours,
                         )
                     record_manual_crawl(user_id)
+                    if summary_mode_manual == "detailed":
+                        record_detail_crawl(user_id)
                     st.success(f"✅ 완료! {saved}개 저장, {skipped}개 중복 건너뜀")
 
             st.divider()
+
+            # 연결 상태
             st.subheader("🔌 연결 상태")
             openai_ok = bool(os.environ.get("OPENAI_API_KEY"))
             st.markdown(
@@ -610,11 +648,12 @@ def show_main_app():
         st.markdown("""
         1. **소스 설정** 탭에서 수집할 신문사 선택
         2. **키워드 설정** 탭에서 관심 키워드 추가 / 필터 ON·OFF
-        3. **요약 모드** 선택 — 기본(빠른 훑기) 또는 상세(깊이 있는 분석)
-        4. **수동 실행** — 원하는 시간 범위로 직접 크롤링
-        5. **자동 실행** — 매일 오전 7시, 오후 8시 자동 저장
-        6. **Notion** 에서 저장된 기사 확인
-        7. **브리핑** 탭에서 그룹별 한눈에 요약 확인
+        3. **자동 수집 요약 모드** 선택 (기본/상세 별도 설정)
+        4. **수동 수집** — 원하는 시간 범위로 직접 크롤링
+        5. **기본 자동 수집** — 매일 오전 7시, 오후 8시 자동 저장
+        6. **지정 시간 자동 수집** — 원하는 시간 추가 설정 가능
+        7. **Notion** 에서 저장된 기사 확인
+        8. **브리핑** 탭에서 그룹별 한눈에 요약 확인
         """)
 
     # ══════════════════════════════════════════════════════
@@ -627,39 +666,33 @@ def show_main_app():
         if not notion_token or not notion_db_id:
             st.error("❌ Notion 연결이 필요합니다.")
         else:
-            # 브리핑 횟수 제한
-            _b_role = st.session_state.get("role", "trial")
-            _b_user_row = get_user_by_id(user_id)
-            _b_custom = _b_user_row.get("custom_briefing_limit") if _b_user_row else None
-            if _b_role == "admin":
-                _b_limit = 99999
-            elif _b_custom is not None:
-                _b_limit = _b_custom
-            elif _b_role == "trial":
-                _b_limit = int(get_admin_config("trial_briefing_limit") or 5)
-            else:
-                _b_limit = int(get_admin_config("free_briefing_limit") or 10)
-
-            _b_used = get_weekly_briefing_count(user_id)
-            _b_remaining = max(0, _b_limit - _b_used)
-
-            if _b_role != "admin":
-                st.markdown(f'<div class="limit-info">📊 이번 주 브리핑: <b>{_b_used} / {_b_limit}회</b> (남은 횟수: <b>{_b_remaining}회</b>)</div>', unsafe_allow_html=True)
-
             # 브리핑 모드 선택
-            b_col1, b_col2 = st.columns(2)
-            with b_col1:
-                briefing_mode = st.radio(
-                    "브리핑 모드",
-                    ["standard", "detailed"],
-                    format_func=lambda x: "📄 기본 브리핑" if x == "standard" else "🔍 상세 브리핑",
-                    horizontal=True,
-                    label_visibility="collapsed"
-                )
+            briefing_mode = st.radio(
+                "브리핑 모드",
+                ["standard", "detailed"],
+                format_func=lambda x: "📄 기본 브리핑" if x == "standard" else "🔍 상세 브리핑",
+                horizontal=True, label_visibility="collapsed",
+                key="briefing_mode_radio"
+            )
             if briefing_mode == "standard":
-                st.caption("📄 기본 브리핑 — 카테고리별 핵심 1줄 요약 + 오늘의 핵심 메시지")
+                st.caption("📄 기본 — 카테고리별 핵심 1줄 요약 + 오늘의 핵심 메시지")
             else:
-                st.caption("🔍 상세 브리핑 — 카테고리별 심층 분석 + 투자 시사점 + 리스크 요인")
+                st.caption("🔍 상세 — 카테고리별 심층 분석 + 투자 시사점 + 리스크 요인")
+
+            # 브리핑 횟수 제한 (기본/상세 별개)
+            if briefing_mode == "standard":
+                _b_limit  = _get_limit(role, user_row, "trial_briefing_std_limit", "free_briefing_std_limit", "custom_briefing_limit")
+            else:
+                _b_limit  = _get_limit(role, user_row, "trial_briefing_det_limit", "free_briefing_det_limit", "custom_briefing_limit")
+
+            _b_bonus  = (user_row.get("briefing_bonus") or 0) if user_row else 0
+            _b_total  = _b_limit + _b_bonus
+            _b_used   = get_weekly_briefing_count(user_id, mode=briefing_mode)
+            _b_remain = max(0, _b_total - _b_used)
+
+            if role != "admin":
+                mode_label = "기본" if briefing_mode == "standard" else "상세"
+                st.markdown(f'<div class="limit-info">📊 이번 주 {mode_label} 브리핑: <b>{_b_used} / {_b_total}회</b> (남은: <b>{_b_remain}회</b>)</div>', unsafe_allow_html=True)
 
             with st.spinner("Notion에서 데이터 불러오는 중..."):
                 groups = _get_notion_groups(notion_token, notion_db_id)
@@ -670,9 +703,9 @@ def show_main_app():
                 selected_group = st.selectbox("브리핑할 그룹 선택", options=groups, index=0)
 
                 if st.button("📋 브리핑 생성", type="primary", use_container_width=True,
-                             disabled=(_b_role in ["trial", "free"] and _b_remaining <= 0)):
-                    if _b_role in ["trial", "free"] and _b_remaining <= 0:
-                        st.error(f"❌ 이번 주 브리핑 횟수({_b_limit}회)를 모두 사용했습니다.")
+                             disabled=(role in ["trial", "free"] and _b_remain <= 0)):
+                    if role in ["trial", "free"] and _b_remain <= 0:
+                        st.error(f"❌ 이번 주 브리핑 횟수({_b_total}회)를 모두 사용했습니다.")
                     else:
                         with st.spinner("기사를 분석하고 브리핑을 생성 중입니다..."):
                             articles = _get_articles_by_group(notion_token, notion_db_id, selected_group)
@@ -684,9 +717,9 @@ def show_main_app():
                                     notion_token, notion_db_id,
                                     selected_group, briefing, len(articles)
                                 )
-                                record_briefing(user_id)
+                                record_briefing(user_id, mode=briefing_mode)
                                 st.session_state["briefing_result"] = briefing
-                                st.session_state["briefing_group"] = selected_group
+                                st.session_state["briefing_group"]  = selected_group
                                 if saved:
                                     st.toast("✅ 브리핑이 Notion에 저장됐습니다!")
 
@@ -702,7 +735,7 @@ def show_main_app():
 def _get_notion_groups(notion_token: str, notion_db_id: str) -> list:
     try:
         from notion_client import Client as NotionClient
-        notion = NotionClient(auth=notion_token)
+        notion  = NotionClient(auth=notion_token)
         results = notion.databases.query(
             database_id=notion_db_id,
             filter={
@@ -733,7 +766,7 @@ def _get_notion_groups(notion_token: str, notion_db_id: str) -> list:
 def _get_articles_by_group(notion_token: str, notion_db_id: str, group: str) -> list:
     try:
         from notion_client import Client as NotionClient
-        notion = NotionClient(auth=notion_token)
+        notion  = NotionClient(auth=notion_token)
         results = notion.databases.query(
             database_id=notion_db_id,
             filter={
@@ -749,10 +782,10 @@ def _get_articles_by_group(notion_token: str, notion_db_id: str, group: str) -> 
         )
         articles = []
         for page in results.get("results", []):
-            props = page.get("properties", {})
-            title = props["이름"]["title"][0]["text"]["content"] if props.get("이름", {}).get("title") else ""
+            props   = page.get("properties", {})
+            title   = props["이름"]["title"][0]["text"]["content"] if props.get("이름", {}).get("title") else ""
             summary = props["요약"]["rich_text"][0]["text"]["content"] if props.get("요약", {}).get("rich_text") else ""
-            url = props.get("URL", {}).get("url", "")
+            url     = props.get("URL", {}).get("url", "")
             if title and summary and summary != "요약 실패":
                 articles.append({"title": title, "summary": summary, "url": url})
         return articles
@@ -814,8 +847,8 @@ def _save_briefing_to_notion(notion_token: str, notion_db_id: str, group: str, b
     try:
         from notion_client import Client as NotionClient
         from datetime import date
-        notion = NotionClient(auth=notion_token)
-        title = f"📋 브리핑 | {group} ({article_count}개 기사)"
+        notion     = NotionClient(auth=notion_token)
+        title      = f"📋 브리핑 | {group} ({article_count}개 기사)"
         base_props = {
             "이름":  {"title": [{"text": {"content": title}}]},
             "날짜":  {"date": {"start": date.today().isoformat()}},
@@ -860,12 +893,12 @@ def show_admin_page():
         from datetime import datetime as _dt
         locked_until = st.session_state.get(lock_key)
         if locked_until and _dt.now() < locked_until:
-            remaining = int((locked_until - _dt.now()).seconds / 60) + 1
+            remaining = int((locked_until - _dt.now()).total_seconds() / 60) + 1
             st.error(f"🔒 관리자 비밀번호 5회 오류. {remaining}분 후 다시 시도해주세요.")
             return
 
         with st.form("admin_verify_form"):
-            admin_pw = st.text_input("관리자 비밀번호", type="password")
+            admin_pw   = st.text_input("관리자 비밀번호", type="password")
             verify_btn = st.form_submit_button("확인", use_container_width=True, type="primary")
         if verify_btn:
             if admin_pw == ADMIN_PASSWORD:
@@ -895,7 +928,7 @@ def show_admin_page():
             st.rerun()
 
     st.divider()
-    users = get_all_users()
+    users     = get_all_users()
     total     = len(users)
     free      = sum(1 for u in users if u["role"] == "free")
     trial     = sum(1 for u in users if u["role"] == "trial")
@@ -922,97 +955,144 @@ def show_admin_page():
         return dt.replace(tzinfo=timezone.utc).astimezone(_KST).strftime('%Y-%m-%d %H:%M')
 
     for user in users:
+        uid = user["user_id"]
         with st.expander(f"{user['email']}  —  {role_labels.get(user['role'], user['role'])}"):
             col1, col2 = st.columns([2, 1])
             with col1:
                 st.write(f"**가입일:** {_kst(user['created_at'])}")
                 st.write(f"**마지막 로그인:** {_kst(user['last_login'])}")
                 st.write(f"**Notion 연결:** {'✅' if user['notion_connected'] else '❌'}")
-                weekly_crawl = get_weekly_crawl_count(user["user_id"])
-                weekly_brief = get_weekly_briefing_count(user["user_id"])
-                st.write(f"**이번 주 수동 수집:** {weekly_crawl}회")
-                st.write(f"**이번 주 브리핑:** {weekly_brief}회")
+                w_crawl = get_weekly_crawl_count(uid)
+                w_detail = get_weekly_detail_count(uid)
+                w_brief_std = get_weekly_briefing_count(uid, mode='standard')
+                w_brief_det = get_weekly_briefing_count(uid, mode='detailed')
+                st.write(f"**이번 주 수동 수집:** {w_crawl}회")
+                st.write(f"**이번 주 상세 요약:** {w_detail}회")
+                st.write(f"**이번 주 브리핑(기본):** {w_brief_std}회 / **브리핑(상세):** {w_brief_det}회")
+
+                # 보너스 횟수 표시
+                b_crawl  = user.get("manual_crawl_bonus", 0)
+                b_brief  = user.get("briefing_bonus", 0)
+                b_detail = user.get("detail_bonus", 0)
+                if b_crawl or b_brief or b_detail:
+                    st.caption(f"🎁 보너스 — 수동수집: +{b_crawl} / 브리핑: +{b_brief} / 상세: +{b_detail}")
+
             with col2:
+                # 권한 변경
                 current_idx = role_options.index(user["role"]) if user["role"] in role_options else 0
-                new_role = st.selectbox(
-                    "권한 변경", options=role_options, index=current_idx,
-                    format_func=lambda x: role_labels.get(x, x),
-                    key=f"role_{user['user_id']}"
-                )
-                if st.button("저장", key=f"save_{user['user_id']}"):
-                    update_user_role(user["user_id"], new_role)
+                new_role    = st.selectbox("권한 변경", options=role_options, index=current_idx,
+                                           format_func=lambda x: role_labels.get(x, x),
+                                           key=f"role_{uid}")
+                if st.button("저장", key=f"save_{uid}"):
+                    update_user_role(uid, new_role)
                     st.toast(f"✅ {user['email']} → {role_labels[new_role]}")
                     st.rerun()
 
-                # 수동 수집 개별 한도
-                cur_custom = user.get("custom_weekly_limit")
-                custom_input = st.number_input(
-                    "수동 수집 개별 한도 (0=기본값)",
-                    min_value=0, max_value=500,
-                    value=cur_custom if cur_custom is not None else 0,
-                    key=f"custom_{user['user_id']}"
-                )
-                cc1, cc2 = st.columns(2)
-                with cc1:
-                    if st.button("수집 저장", key=f"climit_{user['user_id']}"):
-                        update_user_custom_limit(user["user_id"], custom_input if custom_input > 0 else None)
-                        st.toast("✅ 수집 한도 저장!")
+                st.divider()
+
+                # 개별 한도 설정
+                st.caption("**개별 한도 (0=기본값)**")
+                cur_m = user.get("custom_weekly_limit")
+                m_input = st.number_input("수동 수집", min_value=0, max_value=500,
+                                          value=cur_m if cur_m is not None else 0, key=f"m_{uid}")
+                mc1, mc2 = st.columns(2)
+                with mc1:
+                    if st.button("저장", key=f"ms_{uid}"):
+                        update_user_custom_limit(uid, m_input if m_input > 0 else None)
+                        st.toast("✅ 저장!")
                         st.rerun()
-                with cc2:
-                    if st.button("수집 기본값", key=f"creset_{user['user_id']}"):
-                        update_user_custom_limit(user["user_id"], None)
-                        st.toast("✅ 기본값 초기화!")
+                with mc2:
+                    if st.button("기본값", key=f"mr_{uid}"):
+                        update_user_custom_limit(uid, None)
+                        st.toast("✅ 초기화!")
                         st.rerun()
 
-                # 브리핑 개별 한도
-                cur_b_custom = user.get("custom_briefing_limit")
-                briefing_input = st.number_input(
-                    "브리핑 개별 한도 (0=기본값)",
-                    min_value=0, max_value=100,
-                    value=cur_b_custom if cur_b_custom is not None else 0,
-                    key=f"blimit_{user['user_id']}"
-                )
+                cur_d = user.get("custom_detail_limit")
+                d_input = st.number_input("상세 요약", min_value=0, max_value=200,
+                                          value=cur_d if cur_d is not None else 0, key=f"d_{uid}")
+                dc1, dc2 = st.columns(2)
+                with dc1:
+                    if st.button("저장", key=f"ds_{uid}"):
+                        update_user_custom_detail_limit(uid, d_input if d_input > 0 else None)
+                        st.toast("✅ 저장!")
+                        st.rerun()
+                with dc2:
+                    if st.button("기본값", key=f"dr_{uid}"):
+                        update_user_custom_detail_limit(uid, None)
+                        st.toast("✅ 초기화!")
+                        st.rerun()
+
+                cur_b = user.get("custom_briefing_limit")
+                b_input = st.number_input("브리핑", min_value=0, max_value=100,
+                                          value=cur_b if cur_b is not None else 0, key=f"b_{uid}")
                 bc1, bc2 = st.columns(2)
                 with bc1:
-                    if st.button("브리핑 저장", key=f"bsave_{user['user_id']}"):
-                        update_user_custom_briefing_limit(user["user_id"], briefing_input if briefing_input > 0 else None)
-                        st.toast("✅ 브리핑 한도 저장!")
+                    if st.button("저장", key=f"bs_{uid}"):
+                        update_user_custom_briefing_limit(uid, b_input if b_input > 0 else None)
+                        st.toast("✅ 저장!")
                         st.rerun()
                 with bc2:
-                    if st.button("브리핑 기본값", key=f"breset_{user['user_id']}"):
-                        update_user_custom_briefing_limit(user["user_id"], None)
-                        st.toast("✅ 기본값 초기화!")
+                    if st.button("기본값", key=f"br_{uid}"):
+                        update_user_custom_briefing_limit(uid, None)
+                        st.toast("✅ 초기화!")
                         st.rerun()
 
-    # ── 권한별 제한 설정 ──────────────────────────────────
+                st.divider()
+
+                # 보너스 횟수 추가 (수정9 - 같은 주에 추가)
+                st.caption("**이번 주 보너스 추가**")
+                bonus_type = st.selectbox("항목", ["수동 수집", "브리핑", "상세 요약"], key=f"bt_{uid}")
+                bonus_amt  = st.number_input("추가 횟수", min_value=1, max_value=100, value=5, key=f"ba_{uid}")
+                if st.button("➕ 보너스 추가", key=f"badd_{uid}", use_container_width=True):
+                    type_map = {"수동 수집": "manual_crawl_bonus", "브리핑": "briefing_bonus", "상세 요약": "detail_bonus"}
+                    add_user_bonus(uid, type_map[bonus_type], bonus_amt)
+                    st.toast(f"✅ {user['email']} {bonus_type} +{bonus_amt}회 추가!")
+                    st.rerun()
+
+    # ── 권한별 제한 설정 (수정8 - 다음주부터 적용 안내) ──
     st.divider()
     st.subheader("⚙️ 권한별 제한 설정")
+    st.info("⚠️ 여기서 변경한 한도는 **다음 주 월요일부터** 적용됩니다. 이번 주 즉시 추가가 필요하면 위 개별 계정의 **보너스 추가** 기능을 사용하세요.")
 
-    cur_trial  = int(get_admin_config("trial_weekly_limit") or 15)
-    cur_free   = int(get_admin_config("free_weekly_limit") or 30)
-    cur_trial_b = int(get_admin_config("trial_briefing_limit") or 5)
-    cur_free_b  = int(get_admin_config("free_briefing_limit") or 10)
+    cur_trial_m  = int(get_admin_config("trial_weekly_limit")       or 15)
+    cur_free_m   = int(get_admin_config("free_weekly_limit")        or 30)
+    cur_trial_d  = int(get_admin_config("trial_detail_limit")       or 10)
+    cur_free_d   = int(get_admin_config("free_detail_limit")        or 20)
+    cur_trial_bs = int(get_admin_config("trial_briefing_std_limit") or 5)
+    cur_free_bs  = int(get_admin_config("free_briefing_std_limit")  or 10)
+    cur_trial_bd = int(get_admin_config("trial_briefing_det_limit") or 3)
+    cur_free_bd  = int(get_admin_config("free_briefing_det_limit")  or 5)
 
     st.markdown("**수동 수집 주간 한도**")
     s1, s2 = st.columns(2)
-    with s1:
-        new_trial_limit = st.number_input("체험(trial)", min_value=1, max_value=100, value=cur_trial, key="tl")
-    with s2:
-        new_free_limit = st.number_input("무료(free)", min_value=1, max_value=200, value=cur_free, key="fl")
+    with s1: new_tm = st.number_input("체험", min_value=1, max_value=100,  value=cur_trial_m,  key="ntm")
+    with s2: new_fm = st.number_input("무료", min_value=1, max_value=200,  value=cur_free_m,   key="nfm")
 
-    st.markdown("**브리핑 주간 한도**")
+    st.markdown("**상세 요약 주간 한도**")
+    d1, d2 = st.columns(2)
+    with d1: new_td = st.number_input("체험", min_value=1, max_value=100,  value=cur_trial_d,  key="ntd")
+    with d2: new_fd = st.number_input("무료", min_value=1, max_value=200,  value=cur_free_d,   key="nfd")
+
+    st.markdown("**브리핑(기본) 주간 한도**")
     b1, b2 = st.columns(2)
-    with b1:
-        new_trial_b = st.number_input("체험(trial)", min_value=1, max_value=50, value=cur_trial_b, key="tb")
-    with b2:
-        new_free_b = st.number_input("무료(free)", min_value=1, max_value=100, value=cur_free_b, key="fb")
+    with b1: new_tbs = st.number_input("체험", min_value=1, max_value=50,  value=cur_trial_bs, key="ntbs")
+    with b2: new_fbs = st.number_input("무료", min_value=1, max_value=100, value=cur_free_bs,  key="nfbs")
+
+    st.markdown("**브리핑(상세) 주간 한도**")
+    bd1, bd2 = st.columns(2)
+    with bd1: new_tbd = st.number_input("체험", min_value=1, max_value=50,  value=cur_trial_bd, key="ntbd")
+    with bd2: new_fbd = st.number_input("무료", min_value=1, max_value=100, value=cur_free_bd,  key="nfbd")
 
     if st.button("💾 제한 설정 저장", type="primary"):
-        set_admin_config("trial_weekly_limit", str(new_trial_limit))
-        set_admin_config("free_weekly_limit", str(new_free_limit))
-        set_admin_config("trial_briefing_limit", str(new_trial_b))
-        set_admin_config("free_briefing_limit", str(new_free_b))
-        st.toast("✅ 제한 설정 저장 완료!")
+        set_admin_config("trial_weekly_limit",       str(new_tm))
+        set_admin_config("free_weekly_limit",        str(new_fm))
+        set_admin_config("trial_detail_limit",       str(new_td))
+        set_admin_config("free_detail_limit",        str(new_fd))
+        set_admin_config("trial_briefing_std_limit", str(new_tbs))
+        set_admin_config("free_briefing_std_limit",  str(new_fbs))
+        set_admin_config("trial_briefing_det_limit", str(new_tbd))
+        set_admin_config("free_briefing_det_limit",  str(new_fbd))
+        st.toast("✅ 제한 설정 저장 완료! (다음 주부터 적용)")
         st.rerun()
 
 

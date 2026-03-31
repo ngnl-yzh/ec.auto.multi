@@ -137,10 +137,10 @@ def get_time_slot_label(time_label, hours=None):
     yesterday = today - timedelta(days=1)
 
     if time_label == "오전":
-        return (f"{today.strftime('%Y-%m-%d')} 오전 "
+        return (f"{today.strftime('%Y-%m-%d')} 자동 오전 "
                 f"({yesterday.strftime('%m/%d')} 20:00 ~ {today.strftime('%m/%d')} 07:00)")
     elif time_label == "오후":
-        return (f"{today.strftime('%Y-%m-%d')} 오후 "
+        return (f"{today.strftime('%Y-%m-%d')} 자동 오후 "
                 f"({today.strftime('%m/%d')} 07:00 ~ {today.strftime('%m/%d')} 20:00)")
     else:
         h = int(hours) if hours else 24
@@ -334,14 +334,16 @@ def save_to_notion(title, url, summary, source_name, time_slot, notion_token, no
             print(f"❌ Notion 저장 실패: {e}")
 
 # ─── 메인 실행 ───────────────────────────────────────────
-def run_crawler(notion_token, notion_db_id, settings: dict, time_label="오전", hours=None, start_time=None, end_time=None, time_slot=None):
+def run_crawler(notion_token, notion_db_id, settings: dict, time_label="오전", hours=None, start_time=None, end_time=None, time_slot=None, user_email=None):
     """
     notion_token  : 유저의 Notion access_token
     notion_db_id  : 유저의 Notion DB ID
     settings      : user_settings dict (keywords, use_filter, summary_mode, enabled_sources)
+    user_email    : 로그 식별용 이메일 (선택)
     """
+    email_label = f" [{user_email}]" if user_email else ""
     print(f"\n{'='*50}")
-    print(f"📰 경제뉴스 수집 시작 [{time_label}] - {datetime.now(KST).strftime('%Y-%m-%d %H:%M')}")
+    print(f"📰 경제뉴스 수집 시작{email_label} [{time_label}] - {datetime.now(KST).strftime('%Y-%m-%d %H:%M')}")
     print(f"{'='*50}\n")
 
     if start_time is None or end_time is None:

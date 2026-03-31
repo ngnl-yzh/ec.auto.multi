@@ -55,13 +55,16 @@ def init_db():
         """)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS user_settings (
-                user_id         INTEGER PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
-                keywords        JSONB   DEFAULT '[]',
-                use_filter      BOOLEAN DEFAULT FALSE,
-                summary_mode    TEXT    DEFAULT 'standard',
-                enabled_sources JSONB   DEFAULT '[]',
-                auto_enabled    BOOLEAN DEFAULT FALSE,
-                updated_at      TIMESTAMP DEFAULT NOW()
+                user_id              INTEGER PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                keywords             JSONB   DEFAULT '[]',
+                use_filter           BOOLEAN DEFAULT FALSE,
+                summary_mode_auto    TEXT    DEFAULT 'standard',
+                summary_mode_manual  TEXT    DEFAULT 'standard',
+                enabled_sources      JSONB   DEFAULT '[]',
+                auto_enabled_default BOOLEAN DEFAULT FALSE,
+                auto_enabled_custom  BOOLEAN DEFAULT FALSE,
+                custom_schedules     JSONB   DEFAULT '[]',
+                updated_at           TIMESTAMP DEFAULT NOW()
             )
         """)
         cur.execute("""
@@ -72,10 +75,18 @@ def init_db():
             )
         """)
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS briefing_log (
+            CREATE TABLE IF NOT EXISTS detail_crawl_log (
                 id         SERIAL PRIMARY KEY,
                 user_id    INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
                 created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS briefing_log (
+                id              SERIAL PRIMARY KEY,
+                user_id         INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                briefing_mode   TEXT DEFAULT 'standard',
+                created_at      TIMESTAMP DEFAULT NOW()
             )
         """)
         cur.execute("""
@@ -85,21 +96,44 @@ def init_db():
             )
         """)
 
-        # 마이그레이션
+        # 마이그레이션 (기존 컬럼 호환)
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'trial'")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_weekly_limit INTEGER DEFAULT NULL")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_briefing_limit INTEGER DEFAULT NULL")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_detail_limit INTEGER DEFAULT NULL")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS manual_crawl_bonus INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS briefing_bonus INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS detail_bonus INTEGER DEFAULT 0")
+
+        # user_settings 마이그레이션
+        cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS summary_mode_auto TEXT DEFAULT 'standard'")
+        cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS summary_mode_manual TEXT DEFAULT 'standard'")
+        cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS auto_enabled_default BOOLEAN DEFAULT FALSE")
+        cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS auto_enabled_custom BOOLEAN DEFAULT FALSE")
+        cur.execute("""ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS custom_schedules JSONB DEFAULT '[]'""")
+        # briefing_log에 mode 컬럼 추가
+        cur.execute("ALTER TABLE briefing_log ADD COLUMN IF NOT EXISTS briefing_mode TEXT DEFAULT 'standard'")
+
+        # 인덱스
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_login_attempts_email ON login_attempts(email, attempted_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_crawl_log_user ON manual_crawl_log(user_id, created_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_detail_log_user ON detail_crawl_log(user_id, created_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_briefing_log_user ON briefing_log(user_id, created_at)")
-        cur.execute("""ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS custom_schedules JSONB DEFAULT '[{"hour": 7, "minute": 0, "enabled": true, "is_default": true}, {"hour": 20, "minute": 0, "enabled": true, "is_default": true}]'""")
 
         # 기본 설정값
-        cur.execute("INSERT INTO admin_config (key, value) VALUES ('trial_weekly_limit', '15') ON CONFLICT (key) DO NOTHING")
-        cur.execute("INSERT INTO admin_config (key, value) VALUES ('free_weekly_limit', '30') ON CONFLICT (key) DO NOTHING")
-        cur.execute("INSERT INTO admin_config (key, value) VALUES ('trial_briefing_limit', '5') ON CONFLICT (key) DO NOTHING")
-        cur.execute("INSERT INTO admin_config (key, value) VALUES ('free_briefing_limit', '10') ON CONFLICT (key) DO NOTHING")
+        defaults = [
+            ('trial_weekly_limit',        '15'),
+            ('free_weekly_limit',         '30'),
+            ('trial_briefing_std_limit',  '5'),
+            ('free_briefing_std_limit',   '10'),
+            ('trial_briefing_det_limit',  '3'),
+            ('free_briefing_det_limit',   '5'),
+            ('trial_detail_limit',        '10'),
+            ('free_detail_limit',         '20'),
+        ]
+        for k, v in defaults:
+            cur.execute("INSERT INTO admin_config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING", (k, v))
 
 
 # ─── 유저 ────────────────────────────────────────────────
@@ -135,7 +169,7 @@ def update_last_login(user_id: int):
         cur = conn.cursor()
         cur.execute("UPDATE users SET last_login = NOW() WHERE user_id = %s", (user_id,))
 
-def update_notion_credentials(user_id: int, notion_token_enc: str, notion_db_id: str):
+def update_notion_credentials(user_id: int, notion_token_enc, notion_db_id):
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -158,12 +192,41 @@ def update_user_custom_briefing_limit(user_id: int, limit):
         cur = conn.cursor()
         cur.execute("UPDATE users SET custom_briefing_limit = %s WHERE user_id = %s", (limit, user_id))
 
+def update_user_custom_detail_limit(user_id: int, limit):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET custom_detail_limit = %s WHERE user_id = %s", (limit, user_id))
+
+def add_user_bonus(user_id: int, bonus_type: str, amount: int):
+    """bonus_type: 'manual_crawl_bonus' | 'briefing_bonus' | 'detail_bonus'"""
+    allowed = {'manual_crawl_bonus', 'briefing_bonus', 'detail_bonus'}
+    if bonus_type not in allowed:
+        return
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"UPDATE users SET {bonus_type} = COALESCE({bonus_type}, 0) + %s WHERE user_id = %s",
+            (amount, user_id)
+        )
+
+def reset_user_bonus(user_id: int, bonus_type: str):
+    allowed = {'manual_crawl_bonus', 'briefing_bonus', 'detail_bonus'}
+    if bonus_type not in allowed:
+        return
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(f"UPDATE users SET {bonus_type} = 0 WHERE user_id = %s", (user_id,))
+
 def get_all_users():
     with get_conn() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
             SELECT user_id, email, role, is_active, created_at, last_login,
-                   notion_db_id, custom_weekly_limit, custom_briefing_limit,
+                   notion_db_id,
+                   custom_weekly_limit, custom_briefing_limit, custom_detail_limit,
+                   COALESCE(manual_crawl_bonus, 0) AS manual_crawl_bonus,
+                   COALESCE(briefing_bonus, 0)     AS briefing_bonus,
+                   COALESCE(detail_bonus, 0)       AS detail_bonus,
                    CASE WHEN notion_token_enc IS NOT NULL THEN TRUE ELSE FALSE END AS notion_connected
             FROM users
             ORDER BY created_at DESC
@@ -191,18 +254,6 @@ def get_session(session_id: str):
             (session_id,)
         )
         return cur.fetchone()
-
-def extend_session(session_id: str, hours: int = 0, minutes: int = 30):
-    """세션 만료 시간 연장 (hours 또는 minutes 단위)"""
-    from datetime import datetime, timedelta
-    delta = timedelta(hours=hours, minutes=minutes)
-    new_expires = datetime.now() + delta
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "UPDATE sessions SET expires_at = %s WHERE session_id = %s",
-            (new_expires, session_id)
-        )
 
 def delete_session(session_id: str):
     with get_conn() as conn:
@@ -273,20 +324,45 @@ def get_weekly_crawl_count(user_id: int) -> int:
         return cur.fetchone()[0]
 
 
-# ─── 브리핑 횟수 ─────────────────────────────────────────
-def record_briefing(user_id: int):
+# ─── 상세 요약 횟수 ──────────────────────────────────────
+def record_detail_crawl(user_id: int):
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("INSERT INTO briefing_log (user_id) VALUES (%s)", (user_id,))
+        cur.execute("INSERT INTO detail_crawl_log (user_id) VALUES (%s)", (user_id,))
 
-def get_weekly_briefing_count(user_id: int) -> int:
+def get_weekly_detail_count(user_id: int) -> int:
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("""
-            SELECT COUNT(*) FROM briefing_log
+            SELECT COUNT(*) FROM detail_crawl_log
             WHERE user_id = %s
               AND created_at >= DATE_TRUNC('week', NOW() AT TIME ZONE 'Asia/Seoul') AT TIME ZONE 'Asia/Seoul'
         """, (user_id,))
+        return cur.fetchone()[0]
+
+
+# ─── 브리핑 횟수 ─────────────────────────────────────────
+def record_briefing(user_id: int, mode: str = 'standard'):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO briefing_log (user_id, briefing_mode) VALUES (%s, %s)", (user_id, mode))
+
+def get_weekly_briefing_count(user_id: int, mode: str = None) -> int:
+    """mode=None이면 전체, mode='standard'/'detailed'이면 해당 모드만"""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        if mode:
+            cur.execute("""
+                SELECT COUNT(*) FROM briefing_log
+                WHERE user_id = %s AND briefing_mode = %s
+                  AND created_at >= DATE_TRUNC('week', NOW() AT TIME ZONE 'Asia/Seoul') AT TIME ZONE 'Asia/Seoul'
+            """, (user_id, mode))
+        else:
+            cur.execute("""
+                SELECT COUNT(*) FROM briefing_log
+                WHERE user_id = %s
+                  AND created_at >= DATE_TRUNC('week', NOW() AT TIME ZONE 'Asia/Seoul') AT TIME ZONE 'Asia/Seoul'
+            """, (user_id,))
         return cur.fetchone()[0]
 
 
@@ -314,17 +390,21 @@ def get_settings(user_id: int) -> dict:
         cur.execute("SELECT * FROM user_settings WHERE user_id = %s", (user_id,))
         row = cur.fetchone()
         if row:
-            return dict(row)
+            d = dict(row)
+            # 구버전 호환: summary_mode → summary_mode_auto/manual
+            if 'summary_mode' in d and 'summary_mode_auto' not in d:
+                d['summary_mode_auto']   = d.get('summary_mode', 'standard')
+                d['summary_mode_manual'] = d.get('summary_mode', 'standard')
+            return d
         return {
             "keywords": [],
             "use_filter": False,
-            "summary_mode": "standard",
+            "summary_mode_auto": "standard",
+            "summary_mode_manual": "standard",
             "enabled_sources": [],
-            "auto_enabled": False,
-            "custom_schedules": [
-                {"hour": 7,  "minute": 0, "enabled": True, "is_default": True},
-                {"hour": 20, "minute": 0, "enabled": True, "is_default": True},
-            ],
+            "auto_enabled_default": False,
+            "auto_enabled_custom": False,
+            "custom_schedules": [],
         }
 
 def save_settings(user_id: int, settings: dict):
@@ -332,22 +412,28 @@ def save_settings(user_id: int, settings: dict):
         cur = conn.cursor()
         cur.execute("""
             INSERT INTO user_settings
-                (user_id, keywords, use_filter, summary_mode, enabled_sources, auto_enabled, custom_schedules, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                (user_id, keywords, use_filter, summary_mode_auto, summary_mode_manual,
+                 enabled_sources, auto_enabled_default, auto_enabled_custom,
+                 custom_schedules, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (user_id) DO UPDATE
-                SET keywords         = EXCLUDED.keywords,
-                    use_filter       = EXCLUDED.use_filter,
-                    summary_mode     = EXCLUDED.summary_mode,
-                    enabled_sources  = EXCLUDED.enabled_sources,
-                    auto_enabled     = EXCLUDED.auto_enabled,
-                    custom_schedules = EXCLUDED.custom_schedules,
-                    updated_at       = NOW()
+                SET keywords             = EXCLUDED.keywords,
+                    use_filter           = EXCLUDED.use_filter,
+                    summary_mode_auto    = EXCLUDED.summary_mode_auto,
+                    summary_mode_manual  = EXCLUDED.summary_mode_manual,
+                    enabled_sources      = EXCLUDED.enabled_sources,
+                    auto_enabled_default = EXCLUDED.auto_enabled_default,
+                    auto_enabled_custom  = EXCLUDED.auto_enabled_custom,
+                    custom_schedules     = EXCLUDED.custom_schedules,
+                    updated_at           = NOW()
         """, (
             user_id,
             json.dumps(settings.get("keywords", []), ensure_ascii=False),
             settings.get("use_filter", False),
-            settings.get("summary_mode", "standard"),
+            settings.get("summary_mode_auto", "standard"),
+            settings.get("summary_mode_manual", "standard"),
             json.dumps(settings.get("enabled_sources", []), ensure_ascii=False),
-            settings.get("auto_enabled", False),
+            settings.get("auto_enabled_default", False),
+            settings.get("auto_enabled_custom", False),
             json.dumps(settings.get("custom_schedules", []), ensure_ascii=False),
         ))
