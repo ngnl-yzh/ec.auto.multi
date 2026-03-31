@@ -16,8 +16,7 @@ from db import (
     record_briefing, get_weekly_briefing_count,
     get_admin_config, set_admin_config,
     update_user_custom_limit, update_user_custom_briefing_limit,
-    update_user_custom_detail_limit,
-    add_user_bonus, reset_user_bonus
+    add_user_bonus
 )
 from auth import register, login, logout
 from security import encrypt_token, decrypt_token, validate_notion_token, extract_notion_db_id
