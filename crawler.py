@@ -334,12 +334,26 @@ def save_to_notion(title, url, summary, source_name, time_slot, notion_token, no
         "유형":  {"select": {"name": "기사"}},
         "기사 시간": {"rich_text": [{"text": {"content": pub_time}}]},
     }
-    # 저장 시도 순서: 상태+기사시간 → 기사시간만 → 기본속성만
+    def _ensure_article_time_prop():
+        """'기사 시간' 속성이 없으면 자동 추가"""
+        try:
+            db_info = notion.databases.retrieve(database_id=notion_db_id)
+            if "기사 시간" not in db_info.get("properties", {}):
+                notion.databases.update(
+                    database_id=notion_db_id,
+                    properties={"기사 시간": {"rich_text": {}}}
+                )
+                print("✅ '기사 시간' 속성 자동 추가")
+        except Exception as e:
+            print(f"'기사 시간' 속성 추가 실패: {e}")
+
     def _try_save(props):
         try:
             notion.pages.create(parent={"database_id": notion_db_id}, properties=props)
             return True
-        except Exception:
+        except Exception as e:
+            if "is not a property that exists" in str(e) and "기사 시간" in str(e):
+                _ensure_article_time_prop()
             return False
 
     saved = False
@@ -349,13 +363,11 @@ def save_to_notion(title, url, summary, source_name, time_slot, notion_token, no
     # 2차: 기사 시간 포함, 상태 제외
     elif _try_save(base_props):
         saved = True
-    # 3차: 기사 시간 제외 (속성 없는 경우)
-    else:
-        base_no_time = {k: v for k, v in base_props.items() if k != "기사 시간"}
-        if _try_save({**base_no_time, "상태": {"status": {"name": "읽기 전"}}}):
-            saved = True
-        elif _try_save(base_no_time):
-            saved = True
+    # 3차: 속성 자동 추가 후 재시도
+    elif _try_save({**base_props, "상태": {"status": {"name": "읽기 전"}}}):
+        saved = True
+    elif _try_save(base_props):
+        saved = True
 
     if saved:
         print(f"✅ Notion 저장 완료: {title[:30]}...")
