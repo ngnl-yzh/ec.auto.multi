@@ -86,8 +86,12 @@ def _restore_session():
     if st.session_state.get("logged_in"):
         sid = st.session_state.get("session_id")
         if sid:
-            extend_session(sid, minutes=30)
+            # 로그인 유지 중이면 세션 연장 안 함 (7일 세션 유지)
+            if not st.session_state.get("keep_login"):
+                extend_session(sid, minutes=30)
         return
+
+    from_cookie = False
 
     # 1) session_state 확인
     sid = st.session_state.get("session_id")
@@ -101,10 +105,12 @@ def _restore_session():
 
     # 3) 쿠키에서 복원 (창 닫고 재접속)
     if not sid:
-        cm = _get_cookie_manager()
-        if cm:
+        _cm = _get_cookie_manager()
+        if _cm:
             try:
-                sid = cm.get("ec_session_id")
+                sid = _cm.get("ec_session_id")
+                if sid:
+                    from_cookie = True
             except Exception:
                 sid = None
 
@@ -118,18 +124,21 @@ def _restore_session():
             st.session_state.update(
                 logged_in=True, user_id=user["user_id"],
                 email=user["email"], role=user.get("role", "trial"),
-                session_id=sid
+                session_id=sid,
+                keep_login=from_cookie  # 쿠키 복원이면 로그인 유지 중
             )
-            extend_session(sid, minutes=30)
+            # 로그인 유지 중이면 세션 연장 안 함 (7일 그대로 유지)
+            if not from_cookie:
+                extend_session(sid, minutes=30)
             try:
                 st.query_params["sid"] = sid
             except Exception:
                 pass
     else:
         # 세션 만료 시 쿠키·query_params 정리
-        cm = _get_cookie_manager()
-        if cm:
-            try: cm.delete("ec_session_id")
+        _cm = _get_cookie_manager()
+        if _cm:
+            try: _cm.delete("ec_session_id")
             except Exception: pass
         try:
             st.query_params.clear()
