@@ -71,10 +71,13 @@ st.markdown("""
 
 
 # ─── 세션 복원 (쿠키 없음 - 수정7) ──────────────────────
+# CookieManager는 반드시 하나의 인스턴스를 공유해야 함
 def _get_cookie_manager():
     try:
         import extra_streamlit_components as stx
-        return stx.CookieManager(key="ec_cookie_mgr")
+        if "cookie_manager" not in st.session_state:
+            st.session_state["cookie_manager"] = stx.CookieManager(key="ec_cookie_mgr")
+        return st.session_state["cookie_manager"]
     except Exception:
         return None
 
@@ -134,6 +137,18 @@ def _restore_session():
             pass
 
 _restore_session()
+
+# 쿠키 저장 처리 (로그인 직후 rerun 후 실행)
+if st.session_state.get("pending_cookie"):
+    _psid = st.session_state.pop("pending_cookie")
+    _pcm  = _get_cookie_manager()
+    if _pcm:
+        try:
+            _pcm.set("ec_session_id", _psid, expires_at=datetime.now() + timedelta(days=7))
+        except Exception:
+            pass
+    st.toast("✅ 7일간 로그인이 유지됩니다.")
+
 
 
 # ─── 로그아웃 ────────────────────────────────────────────
@@ -202,19 +217,11 @@ def show_auth_page():
                             st.query_params["sid"] = result
                         except Exception:
                             pass
-                        # 로그인 유지 체크 시 쿠키에 저장 (7일)
                         if keep_login:
-                            cm = _get_cookie_manager()
-                            if cm:
-                                try:
-                                    expires = datetime.now() + timedelta(days=7)
-                                    cm.set("ec_session_id", result, expires_at=expires)
-                                except Exception:
-                                    pass
-                            # DB 세션도 7일로 연장
-                            from db import extend_session as _ext
-                            _ext(result, minutes=60*24*7)
-                            st.success("✅ 7일간 로그인이 유지됩니다.")
+                            # DB 세션 7일로 연장
+                            extend_session(result, minutes=60*24*7)
+                            # 쿠키 저장은 rerun 후 처리 (타이밍 문제 방지)
+                            st.session_state["pending_cookie"] = result
                         st.rerun()
                     else:
                         st.error(f"❌ {result}")
