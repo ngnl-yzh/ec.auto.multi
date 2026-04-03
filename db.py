@@ -147,6 +147,8 @@ def init_db():
         cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS custom_schedules JSONB DEFAULT '[]'")
         cur.execute("ALTER TABLE briefing_log ADD COLUMN IF NOT EXISTS briefing_mode TEXT DEFAULT 'standard'")
         cur.execute("ALTER TABLE detail_crawl_log ADD COLUMN IF NOT EXISTS crawl_type TEXT DEFAULT 'manual'")
+        # 구 스키마 호환: 마이그레이션 UPDATE에 필요 (신규 DB에는 CREATE에 없음)
+        cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS auto_enabled BOOLEAN DEFAULT FALSE")
 
         # auto_enabled -> auto_enabled_default 마이그레이션
         cur.execute("""

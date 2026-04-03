@@ -148,7 +148,8 @@ def get_time_slot_label(time_label, hours=None):
                 f"({today.strftime('%m/%d')} 07:00 ~ {today.strftime('%m/%d')} 20:00)")
     else:
         h = int(hours) if hours else 24
-        return f"수동 {now.strftime('%-m/%d일 %H:%M')} (최근 {h}시간)"
+        # %-m는 Windows strftime에서 지원되지 않음 → 월/일은 직접 포맷
+        return f"수동 {now.month}/{now.day}일 {now.strftime('%H:%M')} (최근 {h}시간)"
 
 # ─── 시간 범위 계산 ──────────────────────────────────────
 def get_time_range(time_label, hours=None):
