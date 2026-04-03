@@ -267,6 +267,14 @@ def update_user_role(user_id: int, role: str):
         cur = conn.cursor()
         cur.execute("UPDATE users SET role = %s WHERE user_id = %s", (role, user_id))
 
+
+def delete_user(user_id: int) -> bool:
+    """유저 및 CASCADE로 연결된 세션·설정·로그 삭제"""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM users WHERE user_id = %s", (user_id,))
+        return cur.rowcount > 0
+
 def update_user_custom_limit(user_id: int, limit):
     with get_conn() as conn:
         cur = conn.cursor()

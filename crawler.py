@@ -385,6 +385,7 @@ def run_crawler(notion_token, notion_db_id, settings: dict, time_label="오전",
     """
     email_label = f" [{user_email}]" if user_email else ""
     print(f"\n{'='*50}")
+    print(f"👤 수집 계정: {user_email or '(미지정)'}")
     print(f"📰 경제뉴스 수집 시작{email_label} [{time_label}] - {datetime.now(KST).strftime('%Y-%m-%d %H:%M')}")
     print(f"{'='*50}\n")
 

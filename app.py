@@ -10,7 +10,7 @@ from db import (
     record_schedule_change, get_schedule_change_count,
     update_user_custom_schedule_change_limit,
     update_notion_credentials, get_session,
-    get_all_users, update_user_role,
+    get_all_users, update_user_role, delete_user,
     record_manual_crawl, get_weekly_crawl_count,
     record_detail_crawl, get_weekly_detail_count,
     record_briefing, get_weekly_briefing_count,
@@ -19,7 +19,7 @@ from db import (
     add_user_bonus
 )
 from auth import register, login, logout
-from security import encrypt_token, decrypt_token, validate_notion_token, extract_notion_db_id
+from security import encrypt_token, decrypt_token, validate_notion_token, extract_notion_db_id, verify_password
 from crawler import NEWS_SOURCES, run_crawler
 from scheduler import add_user_jobs, remove_user_jobs, sync_all_user_jobs
 
@@ -82,6 +82,35 @@ def _get_cookie_manager():
         return None
 
 
+def _is_https_request() -> bool:
+    if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PUBLIC_DOMAIN"):
+        return True
+    try:
+        return st.context.headers.get("X-Forwarded-Proto", "").lower() == "https"
+    except Exception:
+        return False
+
+
+def _set_session_persistent_cookie(cm, sid: str) -> None:
+    """로그인 유지 쿠키 — SameSite=Strict는 일부 환경에서 누락되므로 Lax + HTTPS 시 Secure."""
+    if not cm or not sid:
+        return
+    exp = datetime.now() + timedelta(days=7)
+    kw = {
+        "path": "/",
+        "max_age": float(60 * 60 * 24 * 7),
+        "expires_at": exp,
+        "same_site": "lax",
+        "key": "ec_set_persistent",
+    }
+    if _is_https_request():
+        kw["secure"] = True
+    try:
+        cm.set("ec_session_id", sid, **kw)
+    except TypeError:
+        cm.set("ec_session_id", sid, expires_at=exp, path="/")
+
+
 def _restore_session():
     if st.session_state.get("logged_in"):
         sid = st.session_state.get("session_id")
@@ -108,7 +137,10 @@ def _restore_session():
         _cm = _get_cookie_manager()
         if _cm:
             try:
-                sid = _cm.get("ec_session_id")
+                jar = _cm.get_all(key="ec_cookie_jar")
+                sid = (jar or {}).get("ec_session_id")
+                if not sid:
+                    sid = _cm.get("ec_session_id")
                 if sid:
                     from_cookie = True
             except Exception:
@@ -153,7 +185,7 @@ if st.session_state.get("pending_cookie"):
     _pcm  = _get_cookie_manager()
     if _pcm:
         try:
-            _pcm.set("ec_session_id", _psid, expires_at=datetime.now() + timedelta(days=7))
+            _set_session_persistent_cookie(_pcm, _psid)
         except Exception:
             pass
     st.toast("✅ 7일간 로그인이 유지됩니다.")
@@ -253,6 +285,98 @@ def show_auth_page():
 
 
 # ════════════════════════════════════════════════════════
+# Notion 가이드 (설정 / 사용 / 뷰)
+# ════════════════════════════════════════════════════════
+def _render_notion_setup_guide_full():
+    st.markdown("""
+#### 1. Integration(내부 통합) 만들기
+1. [Notion 통합 페이지](https://www.notion.so/profile/integrations) 접속  
+2. **새 API 통합 만들기** → 이름 저장  
+3. **내부 통합 시크릿** 복사 (`ntn_` 로 시작)
+
+#### 2. 데이터베이스 준비
+1. Notion에서 **데이터베이스 → 전체 페이지** 로 DB 생성  
+2. DB 우측 **··· → 연결 추가** 에서 위 Integration 을 연결 (권한 필수)
+
+#### 3. 이 앱에 연결
+1. DB 페이지 **URL 전체** 또는 32자리 DB ID 를 복사  
+2. 로그인 후 **연결 저장 및 테스트** 실행
+
+#### 4. DB 속성(컬럼) 순서
+자동 생성 시 Notion에 **아래 순서로** 한 줄씩 추가됩니다. (이미 있으면 건너뜀)
+
+1. **상태** — 상태 타입 (읽기 전 / 읽는 중 / 읽음)  
+2. **요약** — 본문  
+3. **URL** — URL  
+4. **날짜** — 날짜  
+5. **시간대** — 본문  
+6. **기사 시간** — 본문  
+7. **유형** — 선택 (기사, 브리핑)
+
+> DB에는 기본으로 **이름**(제목) 속성이 있어야 합니다. 없으면 Notion에서 새 DB를 만들어 주세요.
+
+#### 5. 속성만 다시 맞추고 싶을 때
+메인 화면 **🔧 노션 속성 자동 생성** 버튼으로 같은 순서로 빠진 속성만 보완할 수 있습니다.
+""")
+
+
+def _render_notion_usage_guide_full():
+    st.markdown("""
+#### 화면 구성
+- **실행** — 수동 수집, 자동 수집 ON/OFF, 요약 모드  
+- **키워드 설정** — 필터 및 키워드 목록  
+- **소스 설정** — 언론사 ON/OFF  
+- **브리핑** — 시간대별 그룹을 묶어 AI 브리핑 생성  
+- **노션 가이드** — 설정·뷰 설명 (이 탭과 동일 내용 일부)  
+- **계정** — 내 계정 삭제
+
+#### 수동 수집
+1. **수집 범위** 슬라이더로 시간 범위 선택  
+2. **수동 수집 시작** — 선택한 소스·키워드·요약 모드로 Notion에 저장  
+3. Railway/서버 로그에는 **👤 수집 계정: 이메일** 이 출력되어 누가 돌렸는지 구분할 수 있습니다.
+
+#### 자동 수집
+- **기본 자동** — 매일 07:00, 20:00 (KST)  
+- **지정 시간** — 추가 시각·수집 범위(시간) 설정  
+- 서버에서 돌 때도 로그에 **수집 계정(이메일)** 이 표시됩니다.
+
+#### Notion에서 보기
+- **자동/수동 뷰**는 `시간대` 필터로 구분합니다 (가이드의 뷰 설정 참고).  
+- **브리핑**은 `유형 = 브리핑` 으로 필터한 뷰를 쓰면 편합니다.
+
+#### 한도
+- 체험/무료 플랜별로 주간 수집·상세 요약·브리핑 횟수가 다릅니다. 실행 탭 상단 안내를 확인하세요.
+""")
+
+
+def _render_notion_view_guide_markdown():
+    st.markdown("""
+### 📌 뷰(탭) 만드는 방법
+> Notion DB 상단에서 **표 ∨** 버튼 클릭 → **새 보기** → **표** 선택 → 이름 입력
+
+---
+### 1️⃣ 자동수집 뷰
+- **이름:** `자동 수집`
+- **필터:** `유형` = `기사` + `시간대` **포함하지 않음** `수동`
+- **그룹화:** `시간대` / 정렬: 알파벳 역순 / 빈 그룹 숨기기 ON
+
+### 2️⃣ 수동수집 뷰
+- **이름:** `수동 수집`
+- **필터:** `유형` = `기사` + `시간대` **포함** `수동`
+- **그룹화:** 자동수집 뷰와 동일
+
+### 3️⃣ 브리핑 뷰
+- **이름:** `브리핑`
+- **필터:** `유형` = `브리핑`
+
+### 4️⃣ 전체 뷰
+- **이름:** `전체` — 필터 없음, 정렬: `날짜` 내림차순
+
+**그룹화:** 필터 아이콘(≡) → 그룹화 → `시간대` → 알파벳 역순 → 빈 그룹 숨기기 ON
+""")
+
+
+# ════════════════════════════════════════════════════════
 # 2. Notion 연결 설정
 # ════════════════════════════════════════════════════════
 def show_notion_setup_page(user_id: int):
@@ -263,6 +387,13 @@ def show_notion_setup_page(user_id: int):
     with col_lo:
         if st.button("로그아웃"):
             _do_logout()
+
+    st.divider()
+    _gt1, _gt2 = st.tabs(["📋 노션 설정 가이드 (상세)", "📖 노션 사용 가이드 (상세)"])
+    with _gt1:
+        _render_notion_setup_guide_full()
+    with _gt2:
+        _render_notion_usage_guide_full()
 
     st.divider()
     col_guide, col_form = st.columns([1.1, 1])
@@ -297,14 +428,26 @@ def show_notion_setup_page(user_id: int):
 
         st.markdown("""
         <div class="warn-box">
-            ⚠️ <b>DB 속성 필수 항목</b><br>
-            <code>이름</code>(제목) · <code>URL</code>(URL) · <code>날짜</code>(날짜) ·
-            <code>상태</code>(상태) · <code>요약</code>(텍스트) · <code>시간대</code>(텍스트)
+            ⚠️ <b>DB 속성</b> 연결 저장 시 <b>순서대로 자동 생성</b>: 상태 → 요약 → URL → 날짜 → 시간대 → 기사 시간 → 유형<br>
+            <small>기본 <code>이름</code>(제목)은 Notion DB에 반드시 있어야 합니다.</small>
         </div>
         """, unsafe_allow_html=True)
 
     with col_form:
         st.subheader("🔑 연결 정보 입력")
+        _su = get_user_by_id(user_id)
+        if _su and _su.get("notion_token_enc") and _su.get("notion_db_id"):
+            try:
+                _tok = decrypt_token(_su["notion_token_enc"])
+            except Exception:
+                _tok = None
+            if _tok and st.button("🧱 노션 속성 자동 생성 (순서: 상태→요약→URL→…)", use_container_width=True, key="setup_page_notion_props"):
+                with st.spinner("속성 추가 중..."):
+                    _ad, _sk, _er = _setup_notion_db(_tok, _su["notion_db_id"])
+                if _er:
+                    st.error(_er[0])
+                else:
+                    st.success(f"추가: {', '.join(_ad) if _ad else '없음'} · 건너뜀: {', '.join(_sk) if _sk else '없음'}")
         with st.form("notion_form"):
             token_input = st.text_input("Notion Integration 토큰", placeholder="ntn_xxxxxxxxxxxxxxxxxxxx", type="password")
             db_input    = st.text_input("Notion DB URL 또는 DB ID", placeholder="https://notion.so/workspace/xxxxxxxx...")
@@ -402,71 +545,54 @@ def _test_notion(token: str, db_id: str) -> bool:
 
 def _setup_notion_db(token: str, db_id: str) -> tuple:
     """
-    Notion DB에 필수 속성 자동 추가.
+    Notion DB에 필수 속성을 **한 번에 하나씩** 추가해 Notion에서 보이는 순서를 맞춤.
+    순서: 상태 → 요약 → URL → 날짜 → 시간대 → 기사 시간 → 유형
     반환: (추가된 속성 목록, 건너뜀 목록, 오류 목록)
     """
+    from notion_client import Client as NotionClient
+    notion = NotionClient(auth=token)
+
+    prop_defs = [
+        ("상태", {
+            "status": {
+                "options": [
+                    {"name": "읽기 전", "color": "red"},
+                    {"name": "읽는 중", "color": "yellow"},
+                    {"name": "읽음",   "color": "green"},
+                ]
+            }
+        }),
+        ("요약", {"rich_text": {}}),
+        ("URL", {"url": {}}),
+        ("날짜", {"date": {}}),
+        ("시간대", {"rich_text": {}}),
+        ("기사 시간", {"rich_text": {}}),
+        ("유형", {
+            "select": {
+                "options": [
+                    {"name": "기사",   "color": "blue"},
+                    {"name": "브리핑", "color": "purple"},
+                ]
+            }
+        }),
+    ]
+
+    added, skipped, errors = [], [], []
     try:
-        from notion_client import Client as NotionClient
-        notion = NotionClient(auth=token)
-
-        # 현재 DB 속성 조회
-        db_info = notion.databases.retrieve(database_id=db_id)
-        existing = set(db_info.get("properties", {}).keys())
-
-        # 필요한 속성 정의
-        props_to_add = {}
-
-        if "상태" not in existing:
-            props_to_add["상태"] = {
-                "status": {
-                    "options": [
-                        {"name": "읽기 전", "color": "red"},
-                        {"name": "읽는 중", "color": "yellow"},
-                        {"name": "읽음",   "color": "green"},
-                    ]
-                }
-            }
-
-        if "날짜" not in existing:
-            props_to_add["날짜"] = {"date": {}}
-
-        if "URL" not in existing:
-            props_to_add["URL"] = {"url": {}}
-
-        if "시간대" not in existing:
-            props_to_add["시간대"] = {"rich_text": {}}
-
-        if "기사 시간" not in existing:
-            props_to_add["기사 시간"] = {"rich_text": {}}
-
-        if "유형" not in existing:
-            props_to_add["유형"] = {
-                "select": {
-                    "options": [
-                        {"name": "기사",   "color": "blue"},
-                        {"name": "브리핑", "color": "purple"},
-                    ]
-                }
-            }
-
-        added   = list(props_to_add.keys())
-        skipped = [p for p in ["URL","날짜","상태","요약","시간대","기사 시간","유형"] if p in existing]
-        errors  = []
-
-        if props_to_add:
+        for name, spec in prop_defs:
+            db_info = notion.databases.retrieve(database_id=db_id)
+            existing = db_info.get("properties", {})
+            if name in existing:
+                skipped.append(name)
+                continue
             try:
-                notion.databases.update(
-                    database_id=db_id,
-                    properties=props_to_add
-                )
+                notion.databases.update(database_id=db_id, properties={name: spec})
+                added.append(name)
             except Exception as e:
-                errors.append(str(e))
-                added = []
-
+                errors.append(f"{name}: {e}")
         return added, skipped, errors
-
     except Exception as e:
-        return [], [], [str(e)]
+        return added, skipped, [str(e)]
 
 
 # ════════════════════════════════════════════════════════
@@ -523,11 +649,12 @@ def show_main_app():
             if st.button("⚙️ Notion 재설정", use_container_width=True):
                 st.session_state["confirm_notion_reset"] = True
         with b2:
-            if st.button("🔧 DB 속성 설정", use_container_width=True, help="Notion DB에 필수 속성 추가 + 뷰 설정 가이드"):
+            if st.button("🔧 노션 속성 자동 생성", use_container_width=True,
+                         help="상태→요약→URL→날짜→시간대→기사 시간→유형 순으로 빠진 속성만 추가"):
                 st.session_state["show_db_setup"] = True
         
         if st.session_state.get("show_db_setup"):
-            with st.spinner("DB 속성 설정 중..."):
+            with st.spinner("노션 속성 생성 중..."):
                 added, skipped, errors = _setup_notion_db(notion_token, notion_db_id)
             st.session_state.pop("show_db_setup", None)
             if errors:
@@ -552,7 +679,8 @@ def show_main_app():
     has_cookie = False
     if cm:
         try:
-            has_cookie = bool(cm.get("ec_session_id"))
+            _jar = cm.get_all(key="ec_header_ck")
+            has_cookie = bool((_jar or {}).get("ec_session_id"))
         except Exception:
             pass
     if has_cookie:
@@ -583,7 +711,9 @@ def show_main_app():
                 st.session_state.pop("confirm_notion_reset", None)
                 st.rerun()
 
-    tab1, tab2, tab3, tab4 = st.tabs(["⚡ 실행", "🔍 키워드 설정", "📡 소스 설정", "📋 브리핑"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+        ["⚡ 실행", "🔍 키워드 설정", "📡 소스 설정", "📋 브리핑", "📖 노션 가이드", "⚙️ 계정"]
+    )
 
     # ══════════════════════════════════════════════════════
     # TAB 1: 실행
@@ -884,6 +1014,7 @@ def show_main_app():
                             settings=dict(keywords=keywords, use_filter=use_filter,
                                           summary_mode=new_mode_manual, enabled_sources=enabled_sources),
                             time_label="수동", hours=sel_hours,
+                            user_email=email,
                         )
                     record_manual_crawl(user_id)
                     if new_mode_manual == "detailed":
@@ -1002,62 +1133,57 @@ def show_main_app():
             if st.button("전체 해제", use_container_width=True):
                 st.warning("최소 1개는 선택되어야 합니다.")
 
-    with st.expander("📋 Notion 뷰 설정 가이드"):
-        st.markdown("""
-        ### 📌 뷰(탭) 만드는 방법
-        > Notion DB 상단에서 **표 ∨** 버튼 클릭 → **새 보기** → **표** 선택 → 이름 입력
-        """)
+    # ══════════════════════════════════════════════════════
+    # TAB 5: 노션 가이드
+    # ══════════════════════════════════════════════════════
+    with tab5:
+        st.subheader("📖 노션 가이드")
+        with st.expander("📋 노션 설정 가이드", expanded=False):
+            _render_notion_setup_guide_full()
+        with st.expander("📖 노션 사용 가이드", expanded=False):
+            _render_notion_usage_guide_full()
+        with st.expander("📋 Notion 뷰 설정 (자동/수동/브리핑)", expanded=True):
+            _render_notion_view_guide_markdown()
 
+    # ══════════════════════════════════════════════════════
+    # TAB 6: 계정
+    # ══════════════════════════════════════════════════════
+    with tab6:
+        st.subheader("⚙️ 계정")
+        st.caption(f"로그인: **{email}**")
         st.markdown("---")
-        st.markdown("### 1️⃣ 자동수집 뷰")
-        st.markdown("""
-        - **이름:** `자동 수집` 으로 입력
-        - **필터 설정:**
-          - ➕ 필터 추가 → `유형` 선택 → **기사** 선택
-          - ➕ 필터 추가 → `시간대` 선택 → **포함하지 않음** 선택 → `수동` 입력
-        - **그룹화 설정:**
-          - 우측 상단 필터 아이콘(≡) 클릭 → **그룹화** 클릭
-          - 그룹화 기준: `시간대` 선택
-          - 정렬: **알파벳 역순** 선택
-          - 빈 그룹 숨기기: **켜기**
-        """)
-
-        st.markdown("### 2️⃣ 수동수집 뷰")
-        st.markdown("""
-        - **이름:** `수동 수집` 으로 입력
-        - **필터 설정:**
-          - ➕ 필터 추가 → `유형` → **기사**
-          - ➕ 필터 추가 → `시간대` → **포함** → `수동` 입력
-        - **그룹화:** 자동수집 뷰와 동일하게 설정
-        """)
-
-        st.markdown("### 3️⃣ 브리핑 뷰")
-        st.markdown("""
-        - **이름:** `브리핑` 으로 입력
-        - **필터 설정:**
-          - ➕ 필터 추가 → `유형` → **브리핑**
-        - 그룹화 없음
-        """)
-
-        st.markdown("### 4️⃣ 전체 뷰")
-        st.markdown("""
-        - **이름:** `전체` 로 입력
-        - 필터 없음
-        - 정렬: `날짜` 내림차순
-        """)
-
-    st.divider()
-    with st.expander("📖 사용 방법"):
-        st.markdown("""
-        1. **소스 설정** 탭에서 수집할 신문사 선택
-        2. **키워드 설정** 탭에서 관심 키워드 추가 / 필터 ON·OFF
-        3. **자동 수집 요약 모드** 선택 (기본/상세 별도 설정)
-        4. **수동 수집** — 원하는 시간 범위로 직접 크롤링
-        5. **기본 자동 수집** — 매일 오전 7시, 오후 8시 자동 저장
-        6. **지정 시간 자동 수집** — 원하는 시간 추가 설정 가능
-        7. **Notion** 에서 저장된 기사 확인
-        8. **브리핑** 탭에서 그룹별 한눈에 요약 확인
-        """)
+        st.markdown("#### 🗑️ 내 계정 삭제")
+        st.warning("삭제 후 **복구할 수 없습니다.** 모든 설정·로그가 DB에서 제거됩니다.")
+        _dpw = st.text_input("비밀번호 확인", type="password", key="self_del_pw")
+        _dtx = st.text_input("확인 문구: **계정삭제** 를 그대로 입력", key="self_del_confirm")
+        if st.button("🗑️ 내 계정 영구 삭제", type="primary", key="self_del_btn"):
+            if _dtx != "계정삭제":
+                st.error("'계정삭제'를 정확히 입력해주세요.")
+            elif not user_row or not verify_password(_dpw, user_row["password_hash"]):
+                st.error("비밀번호가 올바르지 않습니다.")
+            else:
+                remove_user_jobs(user_id)
+                _sid = st.session_state.get("session_id")
+                if _sid:
+                    try:
+                        logout(_sid)
+                    except Exception:
+                        pass
+                delete_user(user_id)
+                _dcm = _get_cookie_manager()
+                if _dcm:
+                    try:
+                        _dcm.delete("ec_session_id", key="ec_del_self")
+                    except Exception:
+                        pass
+                for _k in ["user_id", "email", "logged_in", "session_id", "role", "keep_login"]:
+                    st.session_state.pop(_k, None)
+                try:
+                    st.query_params.clear()
+                except Exception:
+                    pass
+                st.success("계정이 삭제되었습니다.")
+                st.rerun()
 
     # ══════════════════════════════════════════════════════
     # TAB 4: 브리핑
@@ -1622,6 +1748,44 @@ def show_admin_page():
                     add_user_bonus(uid, type_map[bonus_type], bonus_amt)
                     st.toast(f"✅ {user['email']} {bonus_type} +{bonus_amt}회 추가!")
                     st.rerun()
+
+                st.divider()
+                st.caption("🗑️ 계정 삭제")
+                _admin_n = sum(1 for u in users if u.get("role") == "admin")
+                if user.get("role") == "admin" and _admin_n <= 1:
+                    st.warning("유일한 관리자 계정은 삭제할 수 없습니다.")
+                else:
+                    _del_in = st.text_input("삭제하려면 **DELETE** 입력", key=f"adm_del_txt_{uid}")
+                    if st.button("🗑️ 이 계정 완전 삭제", key=f"adm_del_go_{uid}", type="primary"):
+                        if _del_in != "DELETE":
+                            st.error("DELETE를 정확히 입력하세요.")
+                        else:
+                            remove_user_jobs(uid)
+                            if uid == st.session_state.get("user_id"):
+                                _as = st.session_state.get("session_id")
+                                if _as:
+                                    try:
+                                        logout(_as)
+                                    except Exception:
+                                        pass
+                                delete_user(uid)
+                                _acm = _get_cookie_manager()
+                                if _acm:
+                                    try:
+                                        _acm.delete("ec_session_id", key=f"ec_adm_del_{uid}")
+                                    except Exception:
+                                        pass
+                                for _k in ["user_id", "email", "logged_in", "session_id", "role", "keep_login"]:
+                                    st.session_state.pop(_k, None)
+                                try:
+                                    st.query_params.clear()
+                                except Exception:
+                                    pass
+                                st.rerun()
+                            else:
+                                delete_user(uid)
+                                st.toast(f"삭제됨: {user['email']}")
+                                st.rerun()
 
     # ── 권한별 제한 설정 ──────────────────────────────────
 
