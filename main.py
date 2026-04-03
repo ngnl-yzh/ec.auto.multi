@@ -18,7 +18,7 @@ if __name__ == "__main__":
     if not ok_ek:
         print(f"❌ {msg_ek}")
         exit(1)
-    if "권장" in msg_ek:
+    if msg_ek:
         print(f"⚠️ {msg_ek}")
 
     print("📦 DB 초기화 중...")

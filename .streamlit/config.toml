@@ -1,9 +1,6 @@
-# 보안·운영 기본값 (필요 시 Railway/로컬에서 오버라이드)
+# Railway·구버전 Streamlit과 호환되도록 최소 옵션만 사용
+# (enableCORS/Xsrf 등은 Streamlit 기본값에 맡김 — 잘못된 키로 프로세스가 죽는 것 방지)
 [server]
-# 브라우저 위조 요청 완화
-enableXsrfProtection = true
-# API 키 등이 브라우저에 노출되지 않는 일반 사용에서는 불필요한 CORS 비활성 권장
-enableCORS = false
 maxUploadSize = 5
 
 [browser]

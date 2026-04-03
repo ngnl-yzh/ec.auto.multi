@@ -97,10 +97,12 @@ def validate_password(password: str) -> tuple[bool, str]:
 
 
 def validate_encryption_key_strength() -> tuple[bool, str]:
-    """ENCRYPTION_KEY 최소 길이 검사 (Fernet·PBKDF2 입력으로 충분한 엔트로피 권장)."""
+    """ENCRYPTION_KEY 길이 검사. 배포 호환을 위해 8자 미만만 실패, 그 외는 경고만."""
     raw = os.environ.get("ENCRYPTION_KEY", "")
+    if len(raw) < 8:
+        return False, "ENCRYPTION_KEY는 최소 8자 이상이어야 합니다."
     if len(raw) < 16:
-        return False, "ENCRYPTION_KEY는 최소 16자 이상이어야 합니다."
+        return True, "ENCRYPTION_KEY는 16자 이상(가능하면 32자 무작위)으로 늘리는 것을 권장합니다."
     if len(raw) < 32:
         return True, "ENCRYPTION_KEY는 32자 이상의 무작위 문자열을 권장합니다."
     return True, ""
