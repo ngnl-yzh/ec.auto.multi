@@ -297,7 +297,13 @@ def show_auth_page():
                 r_email = st.text_input("이메일", placeholder="example@email.com", key="re")
                 r_pw    = st.text_input("비밀번호 (8자 이상, 숫자 포함)", type="password", key="rp")
                 r_pw2   = st.text_input("비밀번호 확인", type="password", key="rp2")
-                _hp     = st.text_input("", key="reg_hp", label_visibility="collapsed", placeholder="")
+                # 빈 라벨("")은 Streamlit 정책 위반 — 비어 있지 않은 라벨 + collapsed(허니팟 입력칸만 최소 노출)
+                _hp     = st.text_input(
+                    "자동가입 방지(입력하지 마세요)",
+                    key="reg_hp",
+                    label_visibility="collapsed",
+                    placeholder="",
+                )
                 reg_btn = st.form_submit_button("회원가입", use_container_width=True, type="primary")
             if reg_btn:
                 if _hp and str(_hp).strip():
