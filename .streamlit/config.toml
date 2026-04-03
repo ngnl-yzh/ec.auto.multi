@@ -1,0 +1,10 @@
+# 보안·운영 기본값 (필요 시 Railway/로컬에서 오버라이드)
+[server]
+# 브라우저 위조 요청 완화
+enableXsrfProtection = true
+# API 키 등이 브라우저에 노출되지 않는 일반 사용에서는 불필요한 CORS 비활성 권장
+enableCORS = false
+maxUploadSize = 5
+
+[browser]
+gatherUsageStats = false

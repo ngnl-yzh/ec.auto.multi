@@ -1,6 +1,8 @@
 import os
 import secrets
 import base64
+import hashlib
+import hmac
 import bcrypt
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
@@ -13,8 +15,8 @@ def _get_fernet() -> Fernet:
     if not raw_key:
         raise ValueError("ENCRYPTION_KEY 환경변수가 설정되지 않았습니다.")
 
-    # PASSWORD_SALT를 같이 사용해 키 파생 강화 (없으면 고정값 fallback)
-    salt_str = os.environ.get("PASSWORD_SALT", "ecnews_static_salt_v1")
+    # PASSWORD_SALT 필수 (main.py·배포에서 검증). 미설정 시 고정값은 로컬 개발용일 뿐 비권장.
+    salt_str = os.environ.get("PASSWORD_SALT") or "ecnews_static_salt_v1"
     salt = salt_str.encode()[:32].ljust(32, b"0")  # 32바이트로 정규화
 
     kdf = PBKDF2HMAC(
@@ -72,13 +74,35 @@ def validate_email(email: str) -> tuple[bool, str]:
         return False, "올바른 이메일 형식이 아닙니다."
     return True, ""
 
+def safe_password_equal(candidate: str, expected: str) -> bool:
+    """문자열 비교 시 타이밍 차이 완화(관리자 비밀번호 등). 평문을 직접 비교하지 않음."""
+    ca = hashlib.sha256(candidate.encode("utf-8")).digest()
+    ex = hashlib.sha256(expected.encode("utf-8")).digest()
+    return hmac.compare_digest(ca, ex)
+
+
 def validate_password(password: str) -> tuple[bool, str]:
     if len(password) < 8:
         return False, "비밀번호는 8자 이상이어야 합니다."
     if len(password) > 128:
         return False, "비밀번호가 너무 깁니다."
+    # bcrypt는 72바이트 초과 입력을 조용히 잘라먹음 — 명시적으로 제한
+    if len(password.encode("utf-8")) > 72:
+        return False, "비밀번호는 UTF-8 기준 72바이트 이하여야 합니다."
     if not any(c.isdigit() for c in password):
         return False, "비밀번호에 숫자를 포함해주세요."
+    if not any(c.isalpha() for c in password):
+        return False, "비밀번호에 문자(한글·영문 등)를 포함해주세요."
+    return True, ""
+
+
+def validate_encryption_key_strength() -> tuple[bool, str]:
+    """ENCRYPTION_KEY 최소 길이 검사 (Fernet·PBKDF2 입력으로 충분한 엔트로피 권장)."""
+    raw = os.environ.get("ENCRYPTION_KEY", "")
+    if len(raw) < 16:
+        return False, "ENCRYPTION_KEY는 최소 16자 이상이어야 합니다."
+    if len(raw) < 32:
+        return True, "ENCRYPTION_KEY는 32자 이상의 무작위 문자열을 권장합니다."
     return True, ""
 
 def validate_notion_token(token: str) -> tuple[bool, str]:

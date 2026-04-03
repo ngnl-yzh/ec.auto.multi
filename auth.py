@@ -2,7 +2,9 @@ import os
 from db import (
     create_user, get_user_by_email_for_login, update_last_login,
     record_login_attempt, is_account_locked, get_remaining_lockout_minutes,
-    create_session, delete_session, update_user_role
+    is_ip_bruteforce_locked, get_remaining_ip_lockout_minutes,
+    count_rate_events, record_rate_event,
+    create_session, delete_session, update_user_role,
 )
 from security import (
     hash_password, verify_password,
@@ -12,7 +14,13 @@ from security import (
 
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").lower().strip()
 
-def register(email: str, password: str):
+# 공개 서비스: IP당 일일 가입 상한 (환경변수로 조정)
+_MAX_REG_PER_IP = int(os.environ.get("MAX_REGISTRATIONS_PER_IP_PER_DAY", "5"))
+# 동일 IP에서 15분 내 로그인 실패(계정 무관) 상한
+_IP_LOGIN_FAIL_MAX = int(os.environ.get("IP_LOGIN_MAX_FAILURES_PER_WINDOW", "30"))
+
+
+def register(email: str, password: str, ip_address: str = None):
     ok, msg = validate_email(email)
     if not ok:
         return False, msg
@@ -20,9 +28,15 @@ def register(email: str, password: str):
     if not ok:
         return False, msg
 
+    if ip_address and count_rate_events(ip_address, "register", hours=24) >= _MAX_REG_PER_IP:
+        return False, "같은 네트워크에서 오늘 가입 가능 횟수를 초과했습니다. 내일 다시 시도하거나 관리자에게 문의해주세요."
+
     user_id = create_user(email, hash_password(password))
     if user_id is None:
         return False, "이미 가입된 이메일입니다."
+
+    if ip_address:
+        record_rate_event(ip_address, "register")
 
     # ADMIN_EMAIL과 일치하면 자동으로 admin 권한 부여
     if email.lower().strip() == ADMIN_EMAIL:
@@ -33,6 +47,13 @@ def register(email: str, password: str):
 
 def login(email: str, password: str, ip_address: str = None):
     email = email.lower().strip()
+
+    if ip_address and is_ip_bruteforce_locked(ip_address, max_attempts=_IP_LOGIN_FAIL_MAX):
+        remaining = get_remaining_ip_lockout_minutes(ip_address)
+        return False, (
+            f"이 네트워크에서 로그인 시도가 너무 많습니다. "
+            f"약 {remaining}분 후에 다시 시도해주세요."
+        ), None
 
     if is_account_locked(email):
         remaining = get_remaining_lockout_minutes(email)

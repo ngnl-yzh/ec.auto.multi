@@ -2,6 +2,7 @@ import subprocess
 import os
 from db import init_db, cleanup_expired_sessions
 from scheduler import sync_all_user_jobs
+from security import validate_encryption_key_strength
 
 if __name__ == "__main__":
     print("🚀 경제뉴스 자동화 (멀티버전) 시작!")
@@ -12,6 +13,13 @@ if __name__ == "__main__":
     if missing:
         print(f"❌ 필수 환경변수 누락: {', '.join(missing)}")
         exit(1)
+
+    ok_ek, msg_ek = validate_encryption_key_strength()
+    if not ok_ek:
+        print(f"❌ {msg_ek}")
+        exit(1)
+    if "권장" in msg_ek:
+        print(f"⚠️ {msg_ek}")
 
     print("📦 DB 초기화 중...")
     init_db()

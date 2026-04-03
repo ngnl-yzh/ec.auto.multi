@@ -161,6 +161,24 @@ def init_db():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_login_attempts_email ON login_attempts(email, attempted_at)")
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_login_attempts_ip
+            ON login_attempts(ip_address, attempted_at)
+            WHERE ip_address IS NOT NULL AND ip_address <> ''
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS rate_limit_events (
+                id           SERIAL PRIMARY KEY,
+                ip_address   TEXT NOT NULL,
+                event_type   TEXT NOT NULL,
+                created_at   TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_rate_limit_ip_evt_time
+            ON rate_limit_events(ip_address, event_type, created_at)
+        """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_crawl_log_user ON manual_crawl_log(user_id, created_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_detail_log_user ON detail_crawl_log(user_id, created_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_briefing_log_user ON briefing_log(user_id, created_at)")
@@ -406,6 +424,10 @@ def cleanup_expired_sessions():
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM sessions WHERE expires_at < NOW()")
+        try:
+            cur.execute("DELETE FROM rate_limit_events WHERE created_at < NOW() - INTERVAL '60 days'")
+        except Exception:
+            pass
 
 
 # ─── 로그인 시도 제한 ────────────────────────────────────
@@ -445,6 +467,70 @@ def get_remaining_lockout_minutes(email: str, window_minutes: int = 15) -> int:
         if diff.total_seconds() <= 0:
             return 0
         return max(0, int(diff.total_seconds() // 60) + 1)
+
+
+def is_ip_bruteforce_locked(
+    ip_address: str,
+    max_attempts: int = 30,
+    window_minutes: int = 15,
+) -> bool:
+    """동일 IP에서 짧은 시간에 반복되는 로그인 실패(여러 계정 포함) 차단."""
+    if not ip_address:
+        return False
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COUNT(*) FROM login_attempts
+            WHERE ip_address = %s
+              AND success = FALSE
+              AND attempted_at > NOW() - INTERVAL '1 minute' * %s
+        """, (ip_address, window_minutes))
+        return cur.fetchone()[0] >= max_attempts
+
+
+def get_remaining_ip_lockout_minutes(ip_address: str, window_minutes: int = 15) -> int:
+    if not ip_address:
+        return 0
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT attempted_at FROM login_attempts
+            WHERE ip_address = %s AND success = FALSE
+            ORDER BY attempted_at DESC LIMIT 1
+        """, (ip_address,))
+        row = cur.fetchone()
+        if not row:
+            return 0
+        from datetime import datetime, timedelta
+        unlock_at = row[0] + timedelta(minutes=window_minutes)
+        diff = unlock_at - datetime.now()
+        if diff.total_seconds() <= 0:
+            return 0
+        return max(0, int(diff.total_seconds() // 60) + 1)
+
+
+def count_rate_events(ip_address: str, event_type: str, hours: int = 24) -> int:
+    if not ip_address:
+        return 0
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COUNT(*) FROM rate_limit_events
+            WHERE ip_address = %s AND event_type = %s
+              AND created_at > NOW() - INTERVAL '1 hour' * %s
+        """, (ip_address, event_type, hours))
+        return cur.fetchone()[0]
+
+
+def record_rate_event(ip_address: str, event_type: str):
+    if not ip_address:
+        return
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO rate_limit_events (ip_address, event_type) VALUES (%s, %s)",
+            (ip_address, event_type)
+        )
 
 
 # ─── 수동 수집 횟수 ──────────────────────────────────────

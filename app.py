@@ -19,7 +19,10 @@ from db import (
     add_user_bonus
 )
 from auth import register, login, logout
-from security import encrypt_token, decrypt_token, validate_notion_token, extract_notion_db_id, verify_password
+from security import (
+    encrypt_token, decrypt_token, validate_notion_token, extract_notion_db_id, verify_password,
+    safe_password_equal,
+)
 from crawler import NEWS_SOURCES, run_crawler
 from scheduler import add_user_jobs, remove_user_jobs, sync_all_user_jobs
 
@@ -162,10 +165,6 @@ def _restore_session():
             # 로그인 유지 중이면 세션 연장 안 함 (7일 그대로 유지)
             if not from_cookie:
                 extend_session(sid, minutes=30)
-            try:
-                st.query_params["sid"] = sid
-            except Exception:
-                pass
     else:
         # 세션 만료 시 쿠키·query_params 정리
         _cm = _get_cookie_manager()
@@ -178,6 +177,14 @@ def _restore_session():
             pass
 
 _restore_session()
+
+# 로그인 상태면 URL의 sid 제거(Referer·접속 로그에 세션 토큰이 남는 것 완화). 세션은 session_state·쿠키로 유지.
+if st.session_state.get("logged_in") and st.session_state.get("session_id"):
+    try:
+        if "sid" in st.query_params:
+            del st.query_params["sid"]
+    except Exception:
+        pass
 
 # 쿠키 저장 처리 (로그인 직후 rerun 후 실행)
 if st.session_state.get("pending_cookie"):
@@ -209,6 +216,24 @@ def _do_logout():
     except Exception:
         pass
     st.rerun()
+
+
+def _client_ip() -> str | None:
+    """프록시 뒤 클라이언트 IP (공격·남용 방지용 rate limit)."""
+    try:
+        h = st.context.headers
+        xf = h.get("X-Forwarded-For") or h.get("x-forwarded-for")
+        if xf:
+            part = xf.split(",")[0].strip()
+            if part:
+                return part[:128]
+        for key in ("X-Real-Ip", "x-real-ip", "Cf-Connecting-Ip", "cf-connecting-ip"):
+            v = h.get(key)
+            if v:
+                return str(v).strip()[:128]
+    except Exception:
+        pass
+    return None
 
 
 # ─── 한도 계산 헬퍼 ──────────────────────────────────────
@@ -245,7 +270,7 @@ def show_auth_page():
                 if not email or not password:
                     st.error("이메일과 비밀번호를 입력해주세요.")
                 else:
-                    ok, result, user = login(email, password)
+                    ok, result, user = login(email, password, ip_address=_client_ip())
                     if ok:
                         st.session_state.update(
                             session_id=result,
@@ -272,12 +297,15 @@ def show_auth_page():
                 r_email = st.text_input("이메일", placeholder="example@email.com", key="re")
                 r_pw    = st.text_input("비밀번호 (8자 이상, 숫자 포함)", type="password", key="rp")
                 r_pw2   = st.text_input("비밀번호 확인", type="password", key="rp2")
+                _hp     = st.text_input("", key="reg_hp", label_visibility="collapsed", placeholder="")
                 reg_btn = st.form_submit_button("회원가입", use_container_width=True, type="primary")
             if reg_btn:
-                if r_pw != r_pw2:
+                if _hp and str(_hp).strip():
+                    st.error("요청을 처리할 수 없습니다.")
+                elif r_pw != r_pw2:
                     st.error("❌ 비밀번호가 일치하지 않습니다.")
                 else:
-                    ok, result = register(r_email, r_pw)
+                    ok, result = register(r_email, r_pw, ip_address=_client_ip())
                     if ok:
                         st.success("✅ 회원가입 완료! 로그인 탭에서 로그인해주세요.")
                     else:
@@ -1454,7 +1482,9 @@ def show_admin_page():
             admin_pw   = st.text_input("관리자 비밀번호", type="password")
             verify_btn = st.form_submit_button("확인", use_container_width=True, type="primary")
         if verify_btn:
-            if admin_pw == ADMIN_PASSWORD:
+            if not ADMIN_PASSWORD:
+                st.error("서버에 ADMIN_PASSWORD가 설정되지 않았습니다. 배포 환경 변수를 확인하세요.")
+            elif safe_password_equal(admin_pw, ADMIN_PASSWORD):
                 st.session_state["admin_verified_at"] = datetime.now()
                 st.session_state[fail_key] = 0
                 st.rerun()
