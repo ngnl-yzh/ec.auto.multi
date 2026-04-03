@@ -1,6 +1,6 @@
 import os
 from db import (
-    create_user, get_user_by_email, update_last_login,
+    create_user, get_user_by_email_for_login, update_last_login,
     record_login_attempt, is_account_locked, get_remaining_lockout_minutes,
     create_session, delete_session, update_user_role
 )
@@ -38,11 +38,7 @@ def login(email: str, password: str, ip_address: str = None):
         remaining = get_remaining_lockout_minutes(email)
         return False, f"로그인 시도가 너무 많습니다. {remaining}분 후에 다시 시도해주세요.", None
 
-    user = get_user_by_email(email)
-
-    # 차단된 유저 처리
-    if user and user.get("role") == "blocked":
-        return False, "이용이 제한된 계정입니다. 관리자에게 문의해주세요.", None
+    user = get_user_by_email_for_login(email)
 
     if not user or not verify_password(password, user["password_hash"]):
         record_login_attempt(email, success=False, ip_address=ip_address)
@@ -60,6 +56,9 @@ def login(email: str, password: str, ip_address: str = None):
             return False, f"이메일 또는 비밀번호가 올바르지 않습니다. (남은 시도: {remaining_tries}회)", None
         else:
             return False, "로그인 시도가 너무 많습니다. 15분 후에 다시 시도해주세요.", None
+
+    if user.get("role") == "blocked":
+        return False, "차단된 계정입니다. 관리자에게 문의해주세요.", None
 
     record_login_attempt(email, success=True, ip_address=ip_address)
     update_last_login(user["user_id"])

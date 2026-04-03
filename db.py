@@ -243,6 +243,17 @@ def get_user_by_email(email: str):
         )
         return cur.fetchone()
 
+
+def get_user_by_email_for_login(email: str):
+    """로그인 전용: 차단(role=blocked) 포함, 비활성만 제외. 비밀번호 검증 후 차단 메시지 분기에 사용."""
+    with get_conn() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            "SELECT * FROM users WHERE email = %s AND is_active = TRUE",
+            (email.lower().strip(),)
+        )
+        return cur.fetchone()
+
 def get_user_by_id(user_id: int):
     with get_conn() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)

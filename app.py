@@ -302,10 +302,10 @@ def _render_notion_setup_guide_full():
 1. DB 페이지 **URL 전체** 또는 32자리 DB ID 를 복사  
 2. 로그인 후 **연결 저장 및 테스트** 실행
 
-#### 4. DB 속성(컬럼) 순서
-자동 생성 시 Notion에 **아래 순서로** 한 줄씩 추가됩니다. (이미 있으면 건너뜀)
+#### 4. DB 속성(컬럼) — 추가 순서
+빠진 속성만 **한 번에** 아래 순서대로 추가합니다. (이미 있는 이름은 건너뜀)
 
-1. **상태** — 상태 타입 (읽기 전 / 읽는 중 / 읽음)  
+1. **상태** — 상태 (읽기 전 / 읽는 중 / 읽음)  
 2. **요약** — 본문  
 3. **URL** — URL  
 4. **날짜** — 날짜  
@@ -313,10 +313,16 @@ def _render_notion_setup_guide_full():
 6. **기사 시간** — 본문  
 7. **유형** — 선택 (기사, 브리핑)
 
-> DB에는 기본으로 **이름**(제목) 속성이 있어야 합니다. 없으면 Notion에서 새 DB를 만들어 주세요.
+> DB에는 기본 **이름**(제목) 속성이 있어야 합니다.
 
-#### 5. 속성만 다시 맞추고 싶을 때
-메인 화면 **🔧 노션 속성 자동 생성** 버튼으로 같은 순서로 빠진 속성만 보완할 수 있습니다.
+#### 5. 표에서 보이는 열 순서 (중요)
+Notion 공개 API는 **이미 만들어진 열의 좌우 순서를 바꿀 수 없습니다.**  
+자동 생성 후에도 순서가 다르면, Notion 표 머리글에서 **열을 드래그**해 아래 순서로 맞춰 주세요.
+
+**권장 순서 (이름 다음):** 상태 → 요약 → URL → 날짜 → 시간대 → 기사 시간 → 유형
+
+#### 6. 속성만 다시 맞추기
+메인 **🔧 노션 속성 자동 생성**으로 빠진 속성만 같은 순서로 보완합니다.
 """)
 
 
@@ -428,8 +434,8 @@ def show_notion_setup_page(user_id: int):
 
         st.markdown("""
         <div class="warn-box">
-            ⚠️ <b>DB 속성</b> 연결 저장 시 <b>순서대로 자동 생성</b>: 상태 → 요약 → URL → 날짜 → 시간대 → 기사 시간 → 유형<br>
-            <small>기본 <code>이름</code>(제목)은 Notion DB에 반드시 있어야 합니다.</small>
+            ⚠️ <b>DB 속성</b> 연결 시 빠진 열만 <b>한 번에</b> 추가합니다 (순서: 상태→요약→URL→날짜→시간대→기사 시간→유형).<br>
+            <small>Notion은 API로 열 순서를 바꿀 수 없어, 표에서 드래그로 맞추는 것이 필요할 수 있습니다. 기본 <code>이름</code>(제목) 필수.</small>
         </div>
         """, unsafe_allow_html=True)
 
@@ -485,6 +491,10 @@ def show_notion_setup_page(user_id: int):
                 st.info(f"📝 자동 추가된 속성: {', '.join(added)}")
             if skipped:
                 st.caption(f"이미 있는 속성 (건너뜀): {', '.join(skipped)}")
+            st.info(
+                "Notion은 API로 열 순서를 바꿀 수 없습니다. 표에서 열을 드래그해 "
+                "**이름 → 상태 → 요약 → URL → 날짜 → 시간대 → 기사 시간 → 유형** 순으로 맞춰 주세요."
+            )
 
             st.markdown("""
             ---
@@ -545,8 +555,9 @@ def _test_notion(token: str, db_id: str) -> bool:
 
 def _setup_notion_db(token: str, db_id: str) -> tuple:
     """
-    Notion DB에 필수 속성을 **한 번에 하나씩** 추가해 Notion에서 보이는 순서를 맞춤.
-    순서: 상태 → 요약 → URL → 날짜 → 시간대 → 기사 시간 → 유형
+    Notion DB에 필수 속성 추가. **빠진 속성만** `prop_defs` 순서를 유지한 dict로 한 번에 PATCH 해
+    새 컬럼끼리의 상대 순서를 맞춤 (JSON 키 순서 = Python 3.7+ 삽입 순서).
+    이미 존재하는 열의 표시 순서는 Notion API로 바꿀 수 없음 → 가이드에서 드래그 안내.
     반환: (추가된 속성 목록, 건너뜀 목록, 오류 목록)
     """
     from notion_client import Client as NotionClient
@@ -579,17 +590,27 @@ def _setup_notion_db(token: str, db_id: str) -> tuple:
 
     added, skipped, errors = [], [], []
     try:
+        db_info = notion.databases.retrieve(database_id=db_id)
+        existing = db_info.get("properties", {})
+        to_add = {}
         for name, spec in prop_defs:
-            db_info = notion.databases.retrieve(database_id=db_id)
-            existing = db_info.get("properties", {})
             if name in existing:
                 skipped.append(name)
-                continue
-            try:
-                notion.databases.update(database_id=db_id, properties={name: spec})
-                added.append(name)
-            except Exception as e:
-                errors.append(f"{name}: {e}")
+            else:
+                to_add[name] = spec
+        if not to_add:
+            return added, skipped, errors
+        try:
+            notion.databases.update(database_id=db_id, properties=to_add)
+            added = list(to_add.keys())
+        except Exception as e:
+            errors.append(str(e))
+            for name, spec in to_add.items():
+                try:
+                    notion.databases.update(database_id=db_id, properties={name: spec})
+                    added.append(name)
+                except Exception as e2:
+                    errors.append(f"{name}: {e2}")
         return added, skipped, errors
     except Exception as e:
         return added, skipped, [str(e)]
