@@ -2,12 +2,16 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, date, timedelta
 import os
+from pathlib import Path
 import re
 import random
 from openai import OpenAI
 import httpx
 from notion_client import Client as NotionClient
 from zoneinfo import ZoneInfo
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 KST = ZoneInfo('Asia/Seoul')
 

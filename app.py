@@ -1,6 +1,10 @@
 import streamlit as st
 import os
+from pathlib import Path
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 from db import (
     get_user_by_id, get_settings, save_settings,

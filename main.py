@@ -1,8 +1,12 @@
 import subprocess
 import os
+from pathlib import Path
+from dotenv import load_dotenv
 from db import init_db, cleanup_expired_sessions
 from scheduler import sync_all_user_jobs
 from security import validate_encryption_key_strength
+
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 if __name__ == "__main__":
     print("🚀 경제뉴스 자동화 (멀티버전) 시작!")

@@ -2,9 +2,13 @@ import os
 import psycopg2
 import psycopg2.extras
 import json
+from pathlib import Path
 from contextlib import contextmanager
 from psycopg2 import pool as pg_pool
 import threading
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
